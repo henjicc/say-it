@@ -196,7 +196,7 @@ pub(crate) fn transcription_cancel_inner(
         job_id,
         "error",
         json!({
-            "message": "录音识别已取消：仅停止本地轮询，云端任务可能仍在继续",
+            "message": "录音识别已取消。已提交的云端请求可能仍在处理。",
             "cancelled": true,
         }),
     );
@@ -208,10 +208,11 @@ async fn run_transcription_job(
     job_id: String,
     provider: FileRecognitionProvider,
     file_path: String,
-    params: TranscriptionParams,
+    mut params: TranscriptionParams,
     reuse_cached: bool,
     cancel: CancelFlag,
 ) -> Result<(), String> {
+    crate::providers::capabilities::normalize_file_recognition_params(&mut params);
     let model = params.model_id();
     let cache = if reuse_cached {
         let key = crate::application::transcription_cache::key(
@@ -247,8 +248,7 @@ async fn run_transcription_job(
         }),
     );
 
-    // 内置百炼 SDK、v5 插件与本地模型都由各自能力模块完成上传/轮询；
-    // 宿主只持有一个可取消的能力执行，不再暴露供应商任务协议。
+    // 内置 SDK、v5 插件与本地模型各自处理音频。宿主持有一次可取消的能力执行。
     emit_transcription_event(
         &app,
         &job_id,

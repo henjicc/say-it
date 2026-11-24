@@ -18,7 +18,7 @@ import {
   llmModelValue,
   localPolishModelOptions,
 } from "@/features/models/llmModelOptions";
-import { TRANSLATION_SOURCE_LANGUAGE_OPTIONS, TRANSLATION_TARGET_LANGUAGE_OPTIONS } from "@/features/translation/languages";
+import { useTranslationLanguageOptions } from "@/features/translation/languages";
 import { CMD, cmd } from "@/lib/tauri";
 import { saveAppSettings, useAppSettings } from "@/store/useAppSettingsStore";
 import { ShortcutRecorder } from "@/features/dictation/ShortcutRecorder";
@@ -302,6 +302,7 @@ export function AssistantFeaturePanel({ action, demo }: { action: AssistantActio
   };
 
   const translationEngine = useTranslationStore((state) => state.prefs.engine);
+  const { sourceOptions, targetOptions } = useTranslationLanguageOptions(prefs.sourceLanguage, prefs.targetLanguage);
   const localPolish = useProviderStore((state) => state.profiles).some(
     (profile) => profile.id === feature.llmProviderId && profile.capabilities.includes("polish"),
   );
@@ -316,8 +317,8 @@ export function AssistantFeaturePanel({ action, demo }: { action: AssistantActio
       {demo}
       <AssistantShortcutRow action={action} hint={description} />
       {action === "translateSpeech" && <>
-        <Row label="源语言"><Select className={ROW_CONTROL_W} aria-label="源语言" value={prefs.sourceLanguage} onChange={(event) => void save({ ...prefs, sourceLanguage: event.target.value })}>{TRANSLATION_SOURCE_LANGUAGE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Row>
-        <Row label="目标语言"><Select className={ROW_CONTROL_W} aria-label="目标语言" value={prefs.targetLanguage} onChange={(event) => void save({ ...prefs, targetLanguage: event.target.value })}>{TRANSLATION_TARGET_LANGUAGE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select></Row>
+        <Row label="源语言"><Select className={ROW_CONTROL_W} aria-label="源语言" value={prefs.sourceLanguage} onChange={(event) => void save({ ...prefs, sourceLanguage: event.target.value })}>{sourceOptions.map((item) => <option key={item.value} value={item.value} disabled={item.disabled}>{item.label}</option>)}</Select></Row>
+        <Row label="目标语言"><Select className={ROW_CONTROL_W} aria-label="目标语言" value={prefs.targetLanguage} onChange={(event) => void save({ ...prefs, targetLanguage: event.target.value })}>{targetOptions.map((item) => <option key={item.value} value={item.value} disabled={item.disabled}>{item.label}</option>)}</Select></Row>
       </>}
       {action === "translateSpeech"
         ? <TranslationModelRow />

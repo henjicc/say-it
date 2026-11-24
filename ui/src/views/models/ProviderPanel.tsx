@@ -19,12 +19,12 @@ import {
   asrModelMode,
   asrModelModeLabel,
   currentCatalog,
-  sdkPricing,
+  catalogModelPrice,
   useModelCatalogRevision,
   type AsrModelMode,
 } from "@/features/asr/modelRegistry";
 import { llmPrice, thinkingLevel, type ThinkingLevel } from "@/features/models/llmModelOptions";
-import { audioPrice, type ModelPrice } from "@/features/models/pricing";
+import { type ModelPrice } from "@/features/models/pricing";
 import { adapterOf } from "@/features/models/recommendedLlmModels";
 import { translationPrice } from "@/features/models/usage";
 import { ApiKeyLink, providerApiKeyUrl } from "@/features/settings/apiKeyLinks";
@@ -576,11 +576,11 @@ export function ProviderPanel({ profile }: { profile: ProviderProfile }) {
       id: model.id,
       label: asrModelBaseLabel(model),
       mode: asrModelMode(model),
-      price: audioPrice(model.capabilityId ? sdkPricing()?.capabilities[model.capabilityId] : undefined),
+      price: catalogModelPrice(model),
     }));
   const translationModels = [
     ...(profile.id === TRANSLATION_PROVIDER_ID ? TRANSLATION_MODEL_OPTIONS.map((option) => ({ id: option.value, label: option.label, price: translationPrice(option.value) })) : []),
-    ...catalog.filter((model) => model.category === "translation").map((model) => ({ id: model.id, label: model.label })),
+    ...catalog.filter((model) => model.category === "translation").map((model) => ({ id: model.id, label: model.label, price: catalogModelPrice(model) })),
   ];
   const removable = profile.kind.startsWith("llm:") && profile.id !== "llm-groq";
   const hasLlm = profile.capabilities.includes("llm");

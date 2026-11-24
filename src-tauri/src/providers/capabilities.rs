@@ -58,6 +58,26 @@ pub enum FileRecognitionProvider {
         customization: RequestCustomization,
     },
 }
+
+/// 缓存和执行使用模型实际接受的参数。保存的转写设置仍供其他模型使用。
+pub(crate) fn normalize_file_recognition_params(params: &mut TranscriptionParams) {
+    if !super::registry::is_volcengine_file_model(&params.model_id()) {
+        return;
+    }
+    params.language_hints.retain(|hint| !hint.trim().is_empty());
+    if let [hint] = params.language_hints.as_mut_slice() {
+        *hint = hint.trim().to_ascii_lowercase().replace('_', "-");
+        if matches!(hint.as_str(), "zh" | "zh-hans" | "cmn" | "auto") {
+            params.language_hints.clear();
+        }
+    } else {
+        params.language_hints.clear();
+    }
+    params.diarization_enabled = None;
+    params.speaker_count = None;
+    params.channel_id = None;
+    params.special_word_filter.clear();
+}
 #[cfg(test)]
 pub fn file_recognition_for(
     profile: &ProviderProfile,
@@ -400,7 +420,7 @@ fn parse_plugin_ocr_blocks(value: &Value) -> Result<Vec<OcrTextBlock>, String> {
 
 #[derive(Clone)]
 pub enum TranslationProvider {
-    BailianSdk {
+    BuiltinSdk {
         profile: ProviderProfile,
         credentials: super::credential_store::CredentialStoreHandle,
     },
@@ -429,7 +449,7 @@ pub fn translation_for_with_plugin(
         });
     }
     match profile.kind.as_str() {
-        "sdk:bailian" => Ok(TranslationProvider::BailianSdk {
+        "sdk:bailian" | "sdk:volcengine" => Ok(TranslationProvider::BuiltinSdk {
             profile: profile.clone(),
             credentials,
         }),
@@ -450,11 +470,11 @@ impl TranslationProvider {
         F: FnMut(&str) + Send,
     {
         match self {
-            Self::BailianSdk {
+            Self::BuiltinSdk {
                 profile,
                 credentials,
             } => {
-                super::sdk_runtime::online::translate_bailian(
+                super::sdk_runtime::online::translate_sdk(
                     profile.clone(),
                     credentials.clone(),
                     model.to_string(),

@@ -43,6 +43,11 @@ import {
   createBailianQwenMtTranslationModule,
   type BailianQwenMtModuleConfig,
 } from '@henjicc/ai-sdk/capabilities/translation/bailian'
+import {
+  createVolcengineMtTranslationModule,
+  VOLCENGINE_MT_PRESET,
+  type VolcengineMtModuleConfig,
+} from '@henjicc/ai-sdk/capabilities/translation/volcengine'
 import type { RuntimeContext } from '@henjicc/ai-sdk/runtime'
 
 export const SAYIT_AI_SDK_SOURCE_NAMESPACE = '@henjicc/ai-sdk'
@@ -53,6 +58,7 @@ export const SAYIT_CAPABILITY_MODULE_SOURCES = [
   'bailian-translation',
   'volcengine-speech-recognition',
   'volcengine-speech-recognition-realtime',
+  'volcengine-translation',
   'siliconflow-speech-recognition',
   'groq-speech-recognition',
 ] as const
@@ -66,6 +72,7 @@ export interface SayItCapabilityRuntimeOptions {
   bailianTranslation?: BailianQwenMtModuleConfig
   volcengineSpeechRecognition?: VolcengineAsrModuleOptions
   volcengineSpeechRecognitionRealtime?: VolcengineRealtimeModuleOptions
+  volcengineTranslation?: VolcengineMtModuleConfig
   siliconflowSpeechRecognition?: SiliconFlowAsrModuleOptions
   groqSpeechRecognition?: GroqAsrModuleOptions
 }
@@ -189,12 +196,11 @@ export function validateSayItPluginCapabilityDefinitions(
 
 export function validateSayItPluginCapabilityRegistry(
   registryJson: string,
-  builtinAsrModuleIds: readonly string[]
+  builtinCatalogModels: Readonly<Record<string, string>>
 ): string {
   const registry = parseRegistry(registryJson)
   const client = createCapabilityClient({ runtime: validationRuntime() })
-  // 仅为应用目录中实际可用的内置识别模型预留坐标。
-  registerSources(client, new Set(SAYIT_CAPABILITY_MODULE_SOURCES), { sources: [] }, new Set(builtinAsrModuleIds))
+  registerSources(client, new Set(SAYIT_CAPABILITY_MODULE_SOURCES), { sources: [] }, new Map(Object.entries(builtinCatalogModels)))
   for (const plugin of registry) {
     if (plugin.sourceNamespace !== plugin.pluginId) {
       throw new Error(
@@ -481,18 +487,25 @@ function registerSources(
   client: CapabilityClient,
   sources: ReadonlySet<SayItCapabilityModuleSource>,
   options: SayItCapabilityRuntimeOptions,
-  builtinAsrModuleIds?: ReadonlySet<string>
+  catalogModels?: ReadonlyMap<string, string>
 ): void {
-  const includesAsrPreset = (preset: { id: string }) => builtinAsrModuleIds?.has(preset.id) ?? true
+  const includes = (id: string) => catalogModels?.has(id) ?? true
+  // 内置与插件在各自的运行时执行；校验同时注册时，使用应用分配的内置模型和模块 ID。
+  const withCatalogId = <T extends { descriptor: CapabilityDescriptor }>(module: T): T => {
+    const modelId = catalogModels?.get(module.descriptor.id)
+    return modelId && modelId !== module.descriptor.modelId
+      ? { ...module, descriptor: { ...module.descriptor, id: `sayit.builtin.${modelId}`, modelId } }
+      : module
+  }
   if (sources.has('bailian-speech-recognition')) {
-    for (const preset of bailianNonRealtimeAsrPresets.filter(includesAsrPreset)) {
-      client.register(createBailianAsrModule(preset, options.bailianSpeechRecognition))
+    for (const preset of bailianNonRealtimeAsrPresets.filter(preset => includes(preset.id))) {
+      client.register(withCatalogId(createBailianAsrModule(preset, options.bailianSpeechRecognition)))
     }
   }
   if (sources.has('bailian-speech-recognition-realtime')) {
-    for (const preset of bailianRealtimeAsrPresets.filter(includesAsrPreset)) {
+    for (const preset of bailianRealtimeAsrPresets.filter(preset => includes(preset.id))) {
       client.registerRealtime(
-        createBailianRealtimeAsrModule(preset, options.bailianSpeechRecognitionRealtime)
+        withCatalogId(createBailianRealtimeAsrModule(preset, options.bailianSpeechRecognitionRealtime))
       )
     }
   }
@@ -504,28 +517,31 @@ function registerSources(
     }
   }
   if (sources.has('volcengine-speech-recognition')) {
-    for (const preset of volcengineFileAsrPresets.filter(includesAsrPreset)) {
-      client.register(createVolcengineAsrModule(preset, options.volcengineSpeechRecognition))
+    for (const preset of volcengineFileAsrPresets.filter(preset => includes(preset.id))) {
+      client.register(withCatalogId(createVolcengineAsrModule(preset, options.volcengineSpeechRecognition)))
     }
   }
   if (sources.has('volcengine-speech-recognition-realtime')) {
-    for (const preset of volcengineRealtimeAsrPresets.filter(includesAsrPreset)) {
+    for (const preset of volcengineRealtimeAsrPresets.filter(preset => includes(preset.id))) {
       client.registerRealtime(
-        createVolcengineRealtimeAsrModule(
+        withCatalogId(createVolcengineRealtimeAsrModule(
           preset,
           options.volcengineSpeechRecognitionRealtime
-        )
+        ))
       )
     }
   }
+  if (sources.has('volcengine-translation') && includes(VOLCENGINE_MT_PRESET.moduleId)) {
+    client.register(withCatalogId(createVolcengineMtTranslationModule(options.volcengineTranslation)))
+  }
   if (sources.has('siliconflow-speech-recognition')) {
-    for (const preset of siliconFlowAsrPresets.filter(includesAsrPreset)) {
-      client.register(createSiliconFlowAsrModule(preset, options.siliconflowSpeechRecognition))
+    for (const preset of siliconFlowAsrPresets.filter(preset => includes(preset.id))) {
+      client.register(withCatalogId(createSiliconFlowAsrModule(preset, options.siliconflowSpeechRecognition)))
     }
   }
   if (sources.has('groq-speech-recognition')) {
-    for (const preset of groqAsrPresets.filter(includesAsrPreset)) {
-      client.register(createGroqAsrModule(preset, options.groqSpeechRecognition))
+    for (const preset of groqAsrPresets.filter(preset => includes(preset.id))) {
+      client.register(withCatalogId(createGroqAsrModule(preset, options.groqSpeechRecognition)))
     }
   }
 }

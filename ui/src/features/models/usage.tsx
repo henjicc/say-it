@@ -5,7 +5,7 @@ import { useProviderStore, type ProviderCapability } from "@/store/useProviderSt
 import { useUiStore } from "@/store/useUiStore";
 import type { ModelPickerOption } from "./ModelPicker";
 import { tokenPrice } from "./pricing";
-import { isManagedProvider, isModelOffered, providerReady } from "./providerModels";
+import { isManagedProvider, isModelOffered, providerReady, providerSecretFields } from "./providerModels";
 
 /**
  * 各功能用哪个模型，在模型页「用途」和各功能页都能直接选，写的是同一份设置。
@@ -39,7 +39,7 @@ export function translationPrice(model: string) {
   return pricing?.billing === "tokens" ? tokenPrice(pricing) : undefined;
 }
 
-/** 专用翻译模型：内置 Qwen-MT 加插件提供的翻译模型，按供应商密钥与显示开关过滤，当前选中的始终保留。 */
+/** 专用翻译模型按供应商密钥与显示开关过滤，当前选中的始终保留。 */
 export function useOfferedTranslationOptions(selected: string): Array<ModelPickerOption & { providerId: string }> {
   useModelCatalogRevision();
   const profiles = useProviderStore((state) => state.profiles);
@@ -66,7 +66,7 @@ export function useUsageIssue(
   const profile = useProviderStore((state) => state.profiles.find((item) => item.id === providerId));
   if (!modelKnown) return <span role="status" className="text-[var(--color-err)]">这个模型已下线，请重新选择。</span>;
   if (!profile || !isManagedProvider(profile) || providerReady(profile, capability)) return null;
-  const missingKey = profile.configFields?.find((field) => field.secret && field.capability === capability)?.label ?? "密钥";
+  const missingKey = (capability && providerSecretFields(profile, capability)[0]?.label) || "密钥";
   return (
     <span role="status" className="text-[var(--color-err)]">
       {profile.displayName} 还没有填写{missingKey}。

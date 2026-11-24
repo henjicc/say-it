@@ -5,7 +5,7 @@ import {
   DEFAULT_FILE_ASR_MODEL,
   supportsAlignmentTimestamps,
 } from "@/features/asr/modelOptions";
-import { timestampCapableLabels } from "@/features/asr/modelRegistry";
+import { modelInfo, timestampCapableLabels } from "@/features/asr/modelRegistry";
 import {
   buildCues,
   cuesFromOptimizedSegments,
@@ -13,7 +13,7 @@ import {
   editableFromAlignedResultCues,
   editableFromCues,
 } from "@/features/transcription/subtitles";
-import { useProviderStore } from "@/store/useProviderStore";
+import { useProviderStore, type ProviderProfile } from "@/store/useProviderStore";
 import {
   useTranscriptionStore,
   type AlignOutput,
@@ -33,10 +33,14 @@ let pendingScriptLines: string[] = [];
 let pendingAlignFilePath = "";
 let pendingAlignParamsKey = "";
 
-export function providerHasApiKey() {
+export function transcriptionProvider(profiles: readonly ProviderProfile[], fallbackId: string, model?: string) {
+  const providerId = (model && modelInfo(model)?.providerId) || fallbackId;
+  return profiles.find((item) => item.id === providerId);
+}
+
+export function providerHasApiKey(model?: string) {
   const state = useProviderStore.getState();
-  const providerId = state.effective("asr");
-  const profile = state.profiles.find((item) => item.id === providerId);
+  const profile = transcriptionProvider(state.profiles, state.effective("asr"), model);
   return Boolean(profile && providerReady(profile, "asr"));
 }
 
@@ -299,11 +303,11 @@ async function runAlign(result: TranscriptionResult, scriptLines: string[]) {
   }
 }
 
-export async function ensureProviderReady() {
+export async function ensureProviderReady(model?: string) {
   if (useProviderStore.getState().profiles.length === 0) {
     await useProviderStore.getState().load();
   }
-  return providerHasApiKey();
+  return providerHasApiKey(model);
 }
 
 export function transcriptionRunning() {
@@ -328,11 +332,11 @@ export async function startTranscription() {
     return;
   }
 
-  if (!(await ensureProviderReady())) {
+  if (!(await ensureProviderReady(store.params.model || DEFAULT_FILE_ASR_MODEL))) {
     store.setRuntime({
       stage: "error",
       statusText: "缺少 API Key。",
-      errorMessage: "请先在设置中保存阿里云百炼 API Key。",
+      errorMessage: "请先填写所选识别模型的 API Key。",
     });
     return;
   }
@@ -408,11 +412,11 @@ export async function startAlignment() {
     return;
   }
 
-  if (!(await ensureProviderReady())) {
+  if (!(await ensureProviderReady(store.params.model || DEFAULT_FILE_ASR_MODEL))) {
     store.setRuntime({
       alignStage: "error",
       alignStatusText: "缺少 API Key。",
-      alignErrorMessage: "请先在设置中保存阿里云百炼 API Key。",
+      alignErrorMessage: "请先填写所选识别模型的 API Key。",
     });
     return;
   }
@@ -497,7 +501,10 @@ export async function cancelAlignment() {
 }
 
 export function openProviderSettings() {
-  useUiStore.getState().setView("settings");
+  const state = useProviderStore.getState();
+  const model = useTranscriptionStore.getState().params.model || DEFAULT_FILE_ASR_MODEL;
+  const provider = transcriptionProvider(state.profiles, state.effective("asr"), model);
+  useUiStore.getState().openModels(provider ? `provider:${provider.id}` : undefined);
 }
 
 export function cleanupTranscriptionListener() {

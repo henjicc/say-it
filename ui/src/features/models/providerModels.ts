@@ -5,15 +5,21 @@ export function isManagedProvider(profile: ProviderProfile): boolean {
   return profile.enabled && (profile.authKind !== "none" || Boolean(profile.configFields?.length));
 }
 
+export function providerSecretFields(profile: ProviderProfile, capability: ProviderCapability) {
+  const fields = (profile.configFields ?? []).filter((field) => field.secret);
+  const scoped = fields.filter((field) => field.capability === capability);
+  return scoped.length ? scoped : fields.filter((field) => !field.capability);
+}
+
 /**
  * 供应商能否用。给了 `capability` 且有专管这种能力的密钥（如火山引擎的方舟密钥只管大模型）时，
  * 看这几把密钥是否已填；否则任一密钥填了就算可用。
  */
 export function providerReady(profile: ProviderProfile, capability?: ProviderCapability): boolean {
   if (profile.authKind === "none") return true;
-  const scoped = (profile.configFields ?? []).filter((field) => field.secret && field.capability === capability);
-  if (capability && scoped.length) {
-    return scoped.some((field) => profile.status?.configuredSecrets?.includes(field.key));
+  if (capability && profile.configFields?.some((field) => field.secret && field.capability)) {
+    const fields = providerSecretFields(profile, capability);
+    if (fields.length) return fields.some((field) => profile.status?.configuredSecrets?.includes(field.key));
   }
   return Boolean(profile.status?.configured || profile.status?.hasApiKey);
 }

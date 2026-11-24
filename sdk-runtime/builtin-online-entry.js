@@ -4,6 +4,7 @@ const capabilitySources = Object.freeze({
   translation: 'bailian-translation',
   volcengineAsr: 'volcengine-speech-recognition',
   volcengineRealtimeAsr: 'volcengine-speech-recognition-realtime',
+  volcengineTranslation: 'volcengine-translation',
   siliconflowAsr: 'siliconflow-speech-recognition',
   groqAsr: 'groq-speech-recognition',
 })

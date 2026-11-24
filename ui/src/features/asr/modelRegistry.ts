@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { CMD, cmd } from "@/lib/tauri";
-import { audioPrice, FREE_PRICE, type ModelPrice, type SdkPricing } from "@/features/models/pricing";
+import { audioPrice, FREE_PRICE, tokenPrice, type ModelPrice, type SdkPricing } from "@/features/models/pricing";
 
 export interface ModelInfo {
   id: string; label: string; providerId: string; category: string; protocol: string;
@@ -9,6 +9,8 @@ export interface ModelInfo {
   isDefaultRealtime: boolean; isDefaultFile: boolean; isQwenRealtime: boolean;
   isQwenFile: boolean; isQwenShortAudioFile: boolean; isFunasrFlashFile: boolean;
   capabilityId?: string;
+  translationLanguages?: readonly string[];
+  fileRecognitionLimits?: { maxBytes: number; extensions: string[] };
 }
 export type AsrModelMode = "realtime" | "nonRealtime";
 export interface AsrModelOption {
@@ -86,6 +88,14 @@ export function isLocalAsrModel(item: Pick<ModelInfo, "category" | "protocol">):
   return Boolean(asrModelMode(item))
     && (item.protocol === "builtin-macos-speech" || item.protocol.startsWith("local-"));
 }
+export function catalogModelPrice(item: ModelInfo): ModelPrice | undefined {
+  if (isLocalAsrModel(item)) return FREE_PRICE;
+  const pricing = item.capabilityId ? sdkPricing()?.capabilities[item.capabilityId] : undefined;
+  if (item.category === "translation") {
+    return item.protocol === "sdk-capability-translation" && pricing?.billing === "tokens" ? tokenPrice(pricing) : undefined;
+  }
+  return audioPrice(pricing);
+}
 export function optionsForScene(scene: string): AsrModelOption[] {
   const current = currentCatalog();
   const providerNames = new Map(
@@ -101,7 +111,7 @@ export function optionsForScene(scene: string): AsrModelOption[] {
       filterProviderId: local ? "local" : undefined,
       filterProviderLabel: local ? "本地" : undefined,
       mode: asrModelMode(item),
-      price: local ? FREE_PRICE : audioPrice(item.capabilityId ? current.pricing.capabilities[item.capabilityId] : undefined),
+      price: catalogModelPrice(item),
     };
   });
 }
@@ -134,6 +144,7 @@ export function ocrOptionsForScene(scene: string): OcrModelOption[] {
   return [...implicit, ...explicit];
 }
 export const supportsAlignmentTimestamps = (id: string) => modelInfo(id)?.supportsAlignmentTimestamps ?? false;
+export const isVolcengineFileModel = (id: string) => modelInfo(id)?.protocol === "sdk-volcengine-file";
 /** 场景内可用于文稿对齐的模型名，供提示文案直接列举，避免硬编码供应商名。 */
 export function timestampCapableLabels(scene: string): string[] {
   return currentCatalog()

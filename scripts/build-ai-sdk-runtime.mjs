@@ -80,6 +80,8 @@ const llmModules = await bundleSdkEntry({
 })
 
 const { LLM_PROVIDER_PRESETS } = await import('@henjicc/ai-sdk/llm')
+const { VOLCENGINE_MT_PRESET, VOLCENGINE_MT_LANGUAGES } = await import('@henjicc/ai-sdk/capabilities/translation/volcengine')
+const { volcengineBigAsrFileTurbo } = await import('@henjicc/ai-sdk/capabilities/speech-recognition/volcengine')
 const pricing = await collectPricing()
 const llmHosts = await collectLlmHosts()
 
@@ -99,6 +101,7 @@ const manifest = {
       'bailian-translation',
       'volcengine-speech-recognition',
       'volcengine-speech-recognition-realtime',
+      'volcengine-translation',
       'siliconflow-speech-recognition',
       'groq-speech-recognition',
     ],
@@ -113,6 +116,13 @@ const manifest = {
     bootstrap: describeFile(sdkBootstrapPath, 1),
   },
   pricing,
+  translationLanguages: { [VOLCENGINE_MT_PRESET.moduleId]: VOLCENGINE_MT_LANGUAGES },
+  fileRecognitionLimits: {
+    [volcengineBigAsrFileTurbo.id]: {
+      maxBytes: volcengineBigAsrFileTurbo.maxInlineBytes,
+      extensions: [...volcengineBigAsrFileTurbo.audioFormats, 'opus'],
+    },
+  },
   llmHosts,
 }
 fs.writeFileSync(

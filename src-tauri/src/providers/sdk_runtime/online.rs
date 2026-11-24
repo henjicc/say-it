@@ -61,17 +61,21 @@ impl BuiltinSdkScope {
         Self::new("bailian", "bailian", "apiKey", "translation", &["*.aliyuncs.com"])
     }
 
+    fn volcengine_speech(credential_scope: &'static str) -> Self {
+        Self::new(
+            crate::providers::VOLCENGINE_PROVIDER_ID,
+            // SDK 用豆包语音 ID 请求凭据，设置中的语音密钥归属火山引擎配置。
+            "volcengine-speech",
+            "apiKey",
+            credential_scope,
+            &["openspeech.bytedance.com"],
+        )
+    }
+
     pub fn speech_recognition(profile: &ProviderProfile) -> Result<Self, String> {
         match profile.kind.as_str() {
             "sdk:bailian" => Ok(Self::new("bailian", "bailian", "apiKey", "speech-recognition", &["*.aliyuncs.com"])),
-            "sdk:volcengine" => Ok(Self::new(
-                crate::providers::VOLCENGINE_PROVIDER_ID,
-                // SDK 用豆包语音 ID 请求凭据，设置中的语音识别密钥归属火山引擎配置。
-                "volcengine-speech",
-                "apiKey",
-                "speech-recognition",
-                &["openspeech.bytedance.com"],
-            )),
+            "sdk:volcengine" => Ok(Self::volcengine_speech("speech-recognition")),
             "sdk:siliconflow" => Ok(Self::new(
                 "siliconflow",
                 "siliconflow",
@@ -156,7 +160,7 @@ pub struct BuiltinSdkRuntime {
     timeout: Duration,
 }
 
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SdkFileAsrOptions {
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -233,23 +237,29 @@ fn sdk_file_asr_input(
         .filter_map(|value| non_empty_string(value))
         .collect::<Vec<_>>();
     let language = (hints.len() == 1).then(|| hints[0].clone());
+    let model = params.model_id();
+    let volcengine = crate::providers::registry::is_volcengine_file_model(&model);
     serde_json::to_value(SdkFileAsrInput {
         audio: json!({ "kind": "media-ref", "ref": "input-audio" }),
         language,
-        hints,
+        hints: if volcengine { Vec::new() } else { hints },
         timestamps: true,
-        options: SdkFileAsrOptions {
-            vocabulary: sdk_inline_vocabulary(&params.model_id(), customization),
-            context: non_empty_string(&customization.context),
-            vocabulary_id,
-            diarization_enabled: params.diarization_enabled,
-            speaker_count: params.speaker_count,
-            channel_id: params
-                .channel_id
-                .as_ref()
-                .filter(|value| !value.is_null())
-                .cloned(),
-            special_word_filter: non_empty_string(&params.special_word_filter),
+        options: if volcengine {
+            SdkFileAsrOptions::default()
+        } else {
+            SdkFileAsrOptions {
+                vocabulary: sdk_inline_vocabulary(&model, customization),
+                context: non_empty_string(&customization.context),
+                vocabulary_id,
+                diarization_enabled: params.diarization_enabled,
+                speaker_count: params.speaker_count,
+                channel_id: params
+                    .channel_id
+                    .as_ref()
+                    .filter(|value| !value.is_null())
+                    .cloned(),
+                special_word_filter: non_empty_string(&params.special_word_filter),
+            }
         },
     })
     .expect("SDK 文件识别输入只包含可序列化基础类型")
@@ -541,7 +551,21 @@ pub async fn recognize_sdk_file(
     sdk_asr_to_legacy(value)
 }
 
-pub async fn translate_bailian<F>(
+fn validate_translation_language(languages: &[String], language: &str, label: &str) -> Result<(), String> {
+    let normalized = language.trim().to_ascii_lowercase().replace('_', "-");
+    let code = match normalized.as_str() {
+        "zh-tw" | "zh-hk" => "zh-hant",
+        "zh-cn" | "zh-hans" => "zh",
+        code => code,
+    };
+    if languages.iter().any(|supported| supported.eq_ignore_ascii_case(code)) {
+        Ok(())
+    } else {
+        Err(format!("当前翻译模型不支持{label}「{language}」，请重新选择"))
+    }
+}
+
+pub async fn translate_sdk<F>(
     profile: ProviderProfile,
     credentials: CredentialStoreHandle,
     model: String,
@@ -557,14 +581,38 @@ where
     if cancellation.is_cancelled() {
         return Err("翻译请求已取消".into());
     }
-    let request_id = format!("bailian-translation-{}", uuid::Uuid::new_v4());
-    let module_id = format!("bailian.translation.{model}");
-    let input = json!({
+    let (scope, source, module_id) = if profile.kind == "sdk:volcengine" {
+        let info = crate::providers::registry::builtin_translation_model(&model)
+            .filter(|info| info.provider_id == profile.id)
+            .ok_or_else(|| format!("火山引擎没有翻译模型 {model}"))?;
+        (
+            BuiltinSdkScope::volcengine_speech("translation"),
+            info.sdk_capability_source.as_deref().expect("内置翻译来源"),
+            info.capability_id.clone().expect("内置翻译模块"),
+        )
+    } else {
+        (
+            BuiltinSdkScope::bailian_translation(),
+            "bailian-translation",
+            format!("bailian.translation.{model}"),
+        )
+    };
+    if let Some(languages) = super::SDK_TRANSLATION_LANGUAGES.get(&module_id) {
+        let requested_source = source_language.trim();
+        if !requested_source.is_empty() && !requested_source.eq_ignore_ascii_case("auto") {
+            validate_translation_language(languages, requested_source, "源语言")?;
+        }
+        validate_translation_language(languages, &target_language, "目标语言")?;
+    }
+    let mut input = json!({
         "source": text,
         "sourceLanguage": source_language,
         "targetLanguage": target_language,
-        "options": { "stream": true },
     });
+    if source == "bailian-translation" {
+        input["options"] = json!({ "stream": true });
+    }
+    let request_id = format!("{}-translation-{}", scope.provider_id(), uuid::Uuid::new_v4());
     let (event_tx, mut event_rx) = mpsc::channel(128);
     let cancelled = Arc::new(CancellationFlag::new(false));
     let task_cancelled = cancelled.clone();
@@ -575,13 +623,13 @@ where
             let runtime = BuiltinSdkRuntime::create_with_event_sender(
                 &profile,
                 credentials,
-                BuiltinSdkScope::bailian_translation(),
+                scope,
                 task_request_id.clone(),
                 task_cancelled,
                 HashMap::new(),
                 Some(event_tx),
             )?;
-            runtime.execute_capability("translation", &module_id, input, &task_request_id)
+            runtime.execute_capability(source, &module_id, input, &task_request_id)
         })?;
     let mut accumulated = String::new();
     loop {
@@ -591,30 +639,28 @@ where
                 let _ = task.await;
                 return Err("翻译请求已取消".into());
             }
-            event = event_rx.recv() => {
-                if let Some(event) = event {
-                    let event = event.get("event").unwrap_or(&event);
-                    if event.get("type").and_then(Value::as_str) == Some("delta") {
-                        if let Some(value) = event.get("accumulatedText").and_then(Value::as_str) {
-                            accumulated.clear();
-                            accumulated.push_str(value);
-                        } else if let Some(value) = event.get("text").and_then(Value::as_str) {
-                            accumulated.push_str(value);
-                        }
-                        on_delta(&accumulated);
+            Some(event) = event_rx.recv() => {
+                let event = event.get("event").unwrap_or(&event);
+                if event.get("type").and_then(Value::as_str) == Some("delta") {
+                    if let Some(value) = event.get("accumulatedText").and_then(Value::as_str) {
+                        accumulated.clear();
+                        accumulated.push_str(value);
+                    } else if let Some(value) = event.get("text").and_then(Value::as_str) {
+                        accumulated.push_str(value);
                     }
+                    on_delta(&accumulated);
                 }
             }
             result = &mut task => {
                 let value = result
-                    .map_err(|error| format!("百炼翻译 SDK 工作线程失败：{error}"))??;
+                    .map_err(|error| format!("翻译 SDK 工作线程失败：{error}"))??;
                 let output = value
                     .get("translations")
                     .and_then(Value::as_array)
                     .and_then(|items| items.first())
                     .and_then(|item| item.get("text"))
                     .and_then(Value::as_str)
-                    .ok_or("百炼翻译 SDK 未返回译文")?
+                    .ok_or("翻译 SDK 未返回译文")?
                     .to_string();
                 if accumulated != output {
                     on_delta(&output);
@@ -795,7 +841,7 @@ mod tests {
     async fn pre_cancelled_translation_stops_before_credentials_or_network() {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        let result = translate_bailian(
+        let result = translate_sdk(
             crate::providers::bailian_profile(),
             CredentialStoreHandle::default(),
             "qwen-mt-flash".into(),
@@ -807,6 +853,21 @@ mod tests {
         )
         .await;
         assert_eq!(result.unwrap_err(), "翻译请求已取消");
+    }
+
+    #[test]
+    fn volcengine_file_input_sends_a_single_language_and_no_diarization_options() {
+        let params = crate::providers::capabilities::TranscriptionParams {
+            model: "volcengine-bigasr-file-turbo".into(),
+            language_hints: vec!["ja".into()],
+            diarization_enabled: Some(true),
+            speaker_count: Some(2),
+            ..Default::default()
+        };
+        let input = sdk_file_asr_input(&params, &Default::default(), None);
+        assert_eq!(input["language"], "ja");
+        assert!(input.get("hints").is_none());
+        assert!(input.get("options").is_none());
     }
 
     #[test]

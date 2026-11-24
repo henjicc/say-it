@@ -159,6 +159,25 @@ mod tests {
     }
 
     #[test]
+    fn doubao_file_cache_ignores_options_the_model_does_not_use() {
+        let dir = temp_dir("doubao");
+        let file = dir.join("fixture.wav");
+        std::fs::write(&file, b"audio").unwrap();
+        let file = file.to_str().unwrap();
+        let params = TranscriptionParams { model: "volcengine-bigasr-file-turbo".into(), ..Default::default() };
+        let mut other = TranscriptionParams {
+            language_hints: vec!["en".into(), "ja".into()],
+            diarization_enabled: Some(true),
+            speaker_count: Some(2),
+            ..params.clone()
+        };
+        crate::providers::capabilities::normalize_file_recognition_params(&mut other);
+        let customization = RequestCustomization::default();
+        assert_eq!(key(file, &params, &customization, ""), key(file, &other, &customization, ""));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn stored_result_is_reused_and_old_entries_are_pruned() {
         let dir = temp_dir("store");
         assert!(load(&dir, "missing").is_none());

@@ -127,13 +127,20 @@ pub fn validate_registry_with_sdk(
             .get("validateSayItPluginCapabilityRegistry")
             .map_err(|_| "AI SDK capability bundle 缺少插件 v5 validator".to_string())?;
         let json = serde_json::to_string(&capability_payload).map_err(|error| error.to_string())?;
-        let builtin_asr_module_ids = super::registry::models()
+        let builtin_catalog_models =
+            rquickjs::Object::new(ctx.clone()).map_err(|error| error.to_string())?;
+        for model in super::registry::models()
             .iter()
             .filter(|model| model.sdk_capability_source.is_some())
-            .filter_map(|model| model.capability_id.as_deref())
-            .collect::<Vec<_>>();
+        {
+            if let Some(module_id) = &model.capability_id {
+                builtin_catalog_models
+                    .set(module_id.as_str(), model.id.as_str())
+                    .map_err(|error| error.to_string())?;
+            }
+        }
         validate
-            .call::<_, String>((json, builtin_asr_module_ids))
+            .call::<_, String>((json, builtin_catalog_models))
             .map_err(|error| {
                 format!(
                     "SDK capability 注册校验失败：{}",
@@ -408,7 +415,10 @@ mod tests {
         file.model_id = "seedasr-2.0-file".into();
         file.features.clear();
         file.execution_modes = vec!["request-response".into()];
-        validate_registry_with_sdk(&[("demo", "demo", &[file])]).unwrap();
+        let mut turbo = file.clone();
+        turbo.module_id = "volcengine.speech-recognition.bigasr-file-turbo".into();
+        turbo.model_id = "bigasr-file-turbo".into();
+        validate_registry_with_sdk(&[("demo", "demo", &[file, turbo])]).unwrap();
 
         let mut realtime = capability("demo.speech-recognition.volcengine-realtime");
         realtime.provider_ids = vec!["volcengine-speech".into()];

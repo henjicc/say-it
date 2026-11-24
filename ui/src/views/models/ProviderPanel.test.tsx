@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderProfile } from "@/store/useProviderStore";
 import { llmModelPickerOptions } from "@/features/models/llmModelOptions";
+import { providerReady } from "@/features/models/providerModels";
 import { ProviderPanel } from "./ProviderPanel";
 import { AddProviderModal } from "./AddProviderModal";
 
@@ -174,18 +175,23 @@ describe("llmModelPickerOptions", () => {
     expect(llmModelPickerOptions([{ ...profile, status: { hasApiKey: false } }])).toEqual([]);
   });
 
-  it("火山引擎只填了语音密钥时，大模型不出现在下拉框里", () => {
+  it("火山引擎的语音密钥用于识别和翻译，方舟大模型使用专用密钥", () => {
     const volcengine: ProviderProfile = {
       id: "volcengine", kind: "sdk:volcengine", displayName: "火山引擎", authKind: "api-key",
-      capabilities: ["asr", "llm"], enabled: true,
+      capabilities: ["asr", "llm", "translation"], enabled: true,
       configFields: [
-        { key: "apiKey", label: "语音 API Key", fieldType: "password", secret: true, capability: "asr" },
+        { key: "apiKey", label: "语音 API Key", fieldType: "password", secret: true },
         { key: "arkApiKey", label: "方舟 API Key", fieldType: "password", secret: true, capability: "llm" },
       ],
       status: { hasApiKey: true, configured: true, configuredSecrets: ["apiKey"] },
       config: { models: [llmModel("doubao-seed-2-1-lite-260915", "remote")], modelVisibility: { "doubao-seed-2-1-lite-260915": true } },
     };
+    expect(providerReady(volcengine, "asr")).toBe(true);
+    expect(providerReady(volcengine, "translation")).toBe(true);
     expect(llmModelPickerOptions([volcengine])).toEqual([]);
+    const arkOnly = { ...volcengine, status: { ...volcengine.status, configuredSecrets: ["arkApiKey"] } };
+    expect(providerReady(arkOnly, "asr")).toBe(false);
+    expect(providerReady(arkOnly, "translation")).toBe(false);
     const withArk = { ...volcengine, status: { ...volcengine.status, configuredSecrets: ["apiKey", "arkApiKey"] } };
     expect(llmModelPickerOptions([withArk]).map((option) => option.value)).toEqual([JSON.stringify(["volcengine", "doubao-seed-2-1-lite-260915"])]);
   });

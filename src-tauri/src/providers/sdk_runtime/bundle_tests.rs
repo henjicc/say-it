@@ -187,6 +187,10 @@ fn loads_exact_sdk_bundle_and_discovers_only_requested_capabilities() {
         pricing["capabilities"]["bailian.translation.qwen-mt-flash"]["billing"],
         "tokens"
     );
+    assert_eq!(
+        pricing["capabilities"]["volcengine-speech.translation.doubao-mt"]["billing"],
+        "tokens"
+    );
     assert_eq!(pricing["llm"]["bailian"]["qwen3.8-flash"]["currency"], "CNY");
 
     let source = r#"
@@ -199,6 +203,7 @@ export default () => ({
         'bailian-translation',
         'volcengine-speech-recognition',
         'volcengine-speech-recognition-realtime',
+        'volcengine-translation',
         'siliconflow-speech-recognition',
         'groq-speech-recognition',
       ],
@@ -227,7 +232,7 @@ export default () => ({
         .unwrap();
     assert_eq!(result["version"], "0.18.0");
     assert_eq!(result["namespace"], "@henjicc/ai-sdk");
-    assert_eq!(result["count"], 24);
+    assert_eq!(result["count"], 25);
     assert_eq!(
         result["globals"],
         json!(["undefined", "undefined", "undefined"])
@@ -325,6 +330,104 @@ export default () => ({
     asr_server.join().unwrap();
     translation_server.join().unwrap();
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn builtin_doubao_models_execute_against_the_speech_service_contract() {
+    let source = concat!(
+        r#"
+const createContext = globalThis.__sayitCreateRuntimeContext;
+globalThis.__sayitCreateRuntimeContext = () => {
+  const runtime = createContext();
+  const bytes = new Uint8Array([1, 2, 3]);
+  runtime.media.describe = async () => ({ size: bytes.length, mimeType: 'audio/wav', filename: 'fixture.wav' });
+  runtime.media.readChunk = async (_ref, offset, length) => bytes.slice(offset, offset + length);
+  runtime.transport.fetchStream = async (url, init) => {
+    if (url !== 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash' ||
+        init.headers.get('X-Api-Resource-Id') !== 'volc.bigasr.auc_turbo' ||
+        init.headers.get('X-Api-Key') !== 'fixture-sdk-secret') throw new Error('wrong speech endpoint or credentials');
+    let body = '';
+    for await (const chunk of init.body) body += new TextDecoder().decode(chunk);
+    const input = JSON.parse(body);
+    if (input.audio.data !== 'AQID' || input.audio.language !== 'ja-JP' || !input.request.show_utterances) {
+      throw new Error('wrong flash transcription input');
+    }
+    return new Response(JSON.stringify({
+      audio_info: { duration: 300 },
+      result: { text: 'fixture', utterances: [{ text: 'fixture', start_time: 10, end_time: 290,
+        words: [{ text: 'fixture', start_time: 10, end_time: 290 }] }] },
+    }), { headers: { 'X-Api-Status-Code': '20000000' } });
+  };
+  runtime.transport.fetch = async (url, init) => {
+    if (url !== 'https://openspeech.bytedance.com/api/v3/machine_translation/matx_translate' ||
+        new Headers(init.headers).get('X-Api-Resource-Id') !== 'volc.speech.mt' ||
+        new Headers(init.headers).get('X-Api-Key') !== 'fixture-sdk-secret') throw new Error('wrong translation endpoint or credentials');
+    const input = JSON.parse(init.body);
+    if (input.source_language !== undefined || input.target_language !== 'zh-Hant' || input.text_list[0] !== 'fixture') {
+      throw new Error('wrong machine translation input');
+    }
+    return new Response(JSON.stringify({ code: 20000000, data: { translation_list: [{ translation: '測試' }] } }));
+  };
+  return runtime;
+};
+"#,
+        include_str!("../../../../sdk-runtime/builtin-online-entry.js")
+    );
+    let (root, runtime) = create_runtime(source, "volcengine-speech", &["speech-recognition", "translation"]);
+    let asr = runtime.call("invoke", &json!({
+        "operation": "capability.execute", "source": "volcengine-speech-recognition",
+        "moduleId": "volcengine.speech-recognition.bigasr-file-turbo", "requestId": "fixture-file",
+        "input": {"audio": {"kind": "media-ref", "ref": "fixture"}, "language": "ja", "timestamps": true}
+    }), Duration::from_secs(3)).unwrap();
+    assert_eq!(asr["segments"][0]["words"][0]["endMs"], 290);
+    let translation = runtime.call("invoke", &json!({
+        "operation": "capability.execute", "source": "volcengine-translation",
+        "moduleId": "volcengine-speech.translation.doubao-mt", "requestId": "fixture-translation",
+        "input": {"source": "fixture", "sourceLanguage": "auto", "targetLanguage": "zh_tw"}
+    }), Duration::from_secs(3)).unwrap();
+    assert_eq!(translation["translations"][0]["text"], "測試");
+    assert_eq!(runtime.sdk_resource_counts(), (0, 0, 0));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn volcengine_mt_reads_the_saved_speech_key_before_network() {
+    let credentials = CredentialStoreHandle::from_store(Arc::new(BundleCredentials {
+        provider_id: crate::providers::VOLCENGINE_PROVIDER_ID.into(),
+        value: None,
+    }));
+    let result = super::online::translate_sdk(
+        crate::providers::volcengine_profile(),
+        credentials,
+        "volcengine-doubao-mt".into(),
+        "fixture".into(),
+        "auto".into(),
+        "zh_tw".into(),
+        tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await;
+    assert!(result.unwrap_err().contains("API key is not configured"));
+}
+
+#[tokio::test]
+async fn volcengine_mt_rejects_an_unsupported_language_before_network() {
+    let credentials = CredentialStoreHandle::from_store(Arc::new(BundleCredentials {
+        provider_id: crate::providers::VOLCENGINE_PROVIDER_ID.into(),
+        value: None,
+    }));
+    let result = super::online::translate_sdk(
+        crate::providers::volcengine_profile(),
+        credentials,
+        "volcengine-doubao-mt".into(),
+        "fixture".into(),
+        "auto".into(),
+        "yue".into(),
+        tokio_util::sync::CancellationToken::new(),
+        |_| {},
+    )
+    .await;
+    assert!(result.unwrap_err().contains("当前翻译模型不支持目标语言"));
 }
 
 #[test]

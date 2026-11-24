@@ -8,7 +8,12 @@ vi.mock("@/lib/tauri", () => ({
     version: 1,
     defaultRealtimeModel: "fun-asr-realtime-2026-02-28",
     defaultFileModel: "fun-asr-flash-2026-06-15",
-    pricing: { capabilities: {}, llm: {} },
+    pricing: {
+      capabilities: {
+        "volcengine-speech.translation.doubao-mt": { billing: "tokens", currency: "CNY", inputPerMillionTokens: 1.8, outputPerMillionTokens: 5.4 },
+      },
+      llm: {},
+    },
     models: [
       ...builtinModels,
       {
@@ -83,6 +88,13 @@ describe("ASR model labels", () => {
   });
 
   it("does not add ASR timing labels to non-ASR catalog entries", () => {
-    expect(optionsForScene("subtitleTranslation")[0].label).toBe("插件翻译模型");
+    const options = optionsForScene("subtitleTranslation");
+    expect(options.find((option) => option.value === "translation-fixture")?.label).toBe("插件翻译模型");
+    expect(options.find((option) => option.value === "volcengine-doubao-mt")).toMatchObject({
+      label: "豆包机器翻译",
+      providerId: "volcengine",
+      mode: undefined,
+      price: { perMillionTokens: true },
+    });
   });
 });

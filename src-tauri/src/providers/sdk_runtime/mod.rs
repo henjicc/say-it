@@ -38,6 +38,30 @@ pub static SDK_PRICING: std::sync::LazyLock<Value> = std::sync::LazyLock::new(||
     manifest["pricing"].take()
 });
 
+/// SDK 声明的专用翻译模型语种，按能力模块 ID 索引。
+pub static SDK_TRANSLATION_LANGUAGES: std::sync::LazyLock<std::collections::HashMap<String, Vec<String>>> =
+    std::sync::LazyLock::new(|| {
+        let mut manifest: Value =
+            serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).expect("SDK 清单是构建脚本生成的 JSON");
+        serde_json::from_value(manifest["translationLanguages"].take())
+            .expect("SDK 清单的 translationLanguages 是按模块的语种列表")
+    });
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRecognitionLimits {
+    pub max_bytes: u64,
+    pub extensions: Vec<String>,
+}
+
+pub static SDK_FILE_RECOGNITION_LIMITS: std::sync::LazyLock<std::collections::HashMap<String, FileRecognitionLimits>> =
+    std::sync::LazyLock::new(|| {
+        let mut manifest: Value =
+            serde_json::from_str(AI_SDK_BUNDLE_MANIFEST).expect("SDK 清单是构建脚本生成的 JSON");
+        serde_json::from_value(manifest["fileRecognitionLimits"].take())
+            .expect("SDK 清单的 fileRecognitionLimits 是按模块的文件限制")
+    });
+
 /// 构建时按 SDK 地址解析算出的、内置大模型会访问的主机，按 SDK 供应商 ID。
 pub static SDK_LLM_HOSTS: std::sync::LazyLock<std::collections::HashMap<String, Vec<String>>> =
     std::sync::LazyLock::new(|| {

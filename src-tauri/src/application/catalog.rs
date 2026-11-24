@@ -33,6 +33,10 @@ pub struct ModelCatalogItem {
     /// SDK 能力模块 ID，界面按它查 `ModelCatalog::pricing`。本地模型没有。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capability_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub translation_languages: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_recognition_limits: Option<crate::providers::sdk_runtime::FileRecognitionLimits>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -67,6 +71,7 @@ pub fn build_catalog(
         })
         .map(|model| {
             let route = registry::file_transcription_route(&model.id);
+            let sdk_module = model.sdk_capability_source.as_ref().and(model.capability_id.as_deref());
             ModelCatalogItem {
                 id: model.id.clone(),
                 label: model.label.clone(),
@@ -88,6 +93,12 @@ pub fn build_catalog(
                 is_qwen_short_audio_file: route == FileTranscriptionRoute::SyncQwen,
                 is_funasr_flash_file: route == FileTranscriptionRoute::SyncFunAsrFlash,
                 capability_id: model.capability_id.clone(),
+                translation_languages: sdk_module
+                    .and_then(|id| crate::providers::sdk_runtime::SDK_TRANSLATION_LANGUAGES.get(id))
+                    .cloned(),
+                file_recognition_limits: sdk_module
+                    .and_then(|id| crate::providers::sdk_runtime::SDK_FILE_RECOGNITION_LIMITS.get(id))
+                    .cloned(),
             }
         })
         .collect();
@@ -127,9 +138,9 @@ mod tests {
             &PluginRegistry::default(),
         );
         let expected = if crate::providers::apple_speech::runtime_available() {
-            15
+            17
         } else {
-            14
+            16
         };
         assert_eq!(catalog.models.len(), expected);
         assert!(catalog

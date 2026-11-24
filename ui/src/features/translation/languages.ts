@@ -1,6 +1,10 @@
+import { modelInfo, useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { useTranslationStore } from "@/store/useTranslationStore";
+
 export interface TranslationLanguageOption {
   value: string;
   label: string;
+  disabled?: boolean;
 }
 
 /** Qwen-MT 支持 92 种语种，这里收录常用子集；用代码而非英文名，API 两者都接受。 */
@@ -41,12 +45,34 @@ const COMMON_LANGUAGES: TranslationLanguageOption[] = [
   { value: "lo", label: "老挝语" },
 ];
 
-export const TRANSLATION_TARGET_LANGUAGE_OPTIONS: TranslationLanguageOption[] = COMMON_LANGUAGES;
+const AUTO_LANGUAGE = { value: "auto", label: "自动检测" };
+const EXTRA_LANGUAGE_LABELS: Record<string, string> = { nb: "挪威语", hr: "克罗地亚语", tl: "塔加洛语" };
 
-export const TRANSLATION_SOURCE_LANGUAGE_OPTIONS: TranslationLanguageOption[] = [
-  { value: "auto", label: "自动检测" },
-  ...COMMON_LANGUAGES,
-];
+function keepSelectedLanguage(options: TranslationLanguageOption[], value: string) {
+  if (options.some((option) => option.value === value)) return options;
+  const label = COMMON_LANGUAGES.find((option) => option.value === value)?.label ?? value;
+  return [{ value, label: `${label}（当前模型不支持）`, disabled: true }, ...options];
+}
+
+export function useTranslationLanguageOptions(source: string, target: string): {
+  sourceOptions: TranslationLanguageOption[];
+  targetOptions: TranslationLanguageOption[];
+} {
+  useModelCatalogRevision();
+  const prefs = useTranslationStore((state) => state.prefs);
+  const supported = prefs.engine === "dedicated" ? modelInfo(prefs.model)?.translationLanguages : undefined;
+  if (!supported) return { sourceOptions: [AUTO_LANGUAGE, ...COMMON_LANGUAGES], targetOptions: COMMON_LANGUAGES };
+
+  const languages = supported.map((code) => {
+    const value = code === "zh-Hant" ? "zh_tw" : code;
+    const label = COMMON_LANGUAGES.find((option) => option.value === value)?.label ?? EXTRA_LANGUAGE_LABELS[value] ?? value;
+    return { value, label };
+  });
+  return {
+    sourceOptions: keepSelectedLanguage([AUTO_LANGUAGE, ...languages], source),
+    targetOptions: keepSelectedLanguage(languages, target),
+  };
+}
 
 export const DEFAULT_TRANSLATION_TARGET_LANG = "zh";
 export const DEFAULT_TRANSLATION_SOURCE_LANG = "auto";

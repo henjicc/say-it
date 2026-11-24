@@ -1,6 +1,6 @@
 use crate::providers::capabilities::translation_for_with_plugin;
 use crate::providers::capabilities::TranslationProvider;
-use crate::providers::default_provider_id;
+use crate::providers::{registry, BAILIAN_PROVIDER_ID};
 use crate::state::RuntimeState;
 use serde::Deserialize;
 use serde_json::Value;
@@ -132,13 +132,9 @@ pub(crate) fn resolve_provider(
         .lock()
         .map_err(|_| "插件注册表锁失败")?
         .provider_id_for_model(model);
-    let settings = state
-        .providers
-        .lock()
-        .map_err(|_| "供应商配置锁失败")?
-        .clone();
-    let provider_id =
-        plugin_provider.unwrap_or_else(|| default_provider_id(&settings, "translation"));
+    let provider_id = plugin_provider
+        .or_else(|| registry::builtin_translation_model(model).map(|info| info.provider_id.clone()))
+        .unwrap_or_else(|| BAILIAN_PROVIDER_ID.to_string());
     let profile = crate::commands::common::provider_profile_for_execution(state, &provider_id)?;
     if !profile.enabled {
         return Err(format!("翻译供应商 {provider_id} 不存在或未启用"));

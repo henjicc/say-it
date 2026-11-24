@@ -9,15 +9,13 @@ import {
 } from "@/store/useSubtitleStore";
 import { Switch } from "@/components/ui/Switch";
 import { TranslationModelRow } from "@/features/translation/TranslationModelRow";
-import {
-  TRANSLATION_SOURCE_LANGUAGE_OPTIONS,
-  TRANSLATION_TARGET_LANGUAGE_OPTIONS,
-} from "@/features/translation/languages";
+import { useTranslationLanguageOptions } from "@/features/translation/languages";
 
 
 export function SubtitleTranslationPanel() {
   const { prefs, patch } = useSubtitleStore();
   const enabled = prefs.translationEnabled;
+  const { sourceOptions, targetOptions } = useTranslationLanguageOptions(prefs.translationSourceLang, prefs.translationTargetLang);
 
   return (
     <InspectorBody>
@@ -37,8 +35,8 @@ export function SubtitleTranslationPanel() {
               value={prefs.translationSourceLang}
               onChange={(event) => patch({ translationSourceLang: event.target.value })}
             >
-              {TRANSLATION_SOURCE_LANGUAGE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
+              {sourceOptions.map((option) => (
+                <option key={option.value} value={option.value} disabled={option.disabled}>
                   {option.label}
                 </option>
               ))}
@@ -51,8 +49,8 @@ export function SubtitleTranslationPanel() {
               value={prefs.translationTargetLang}
               onChange={(event) => patch({ translationTargetLang: event.target.value })}
             >
-              {TRANSLATION_TARGET_LANGUAGE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
+              {targetOptions.map((option) => (
+                <option key={option.value} value={option.value} disabled={option.disabled}>
                   {option.label}
                 </option>
               ))}

@@ -15,18 +15,20 @@ import {
   cancelTranscription,
   openProviderSettings,
   startTranscription,
+  transcriptionProvider,
 } from "@/features/transcription/controller";
 import {
   FileCard,
   type FileCardStatusTone,
   defaultSrtName,
+  fileRecognitionIssue,
   useFileDrop,
   useFilePick,
 } from "@/features/transcription/filePicker";
 import { editablePlainText, plainText, speakerText } from "@/features/transcription/subtitles";
 import { normalizeStoredParams, parseSpeakerCount, useTranscriptionParamsSync } from "@/features/transcription/paramsSync";
 import { FILE_ASR_MODEL_OPTIONS, supportsAlignmentTimestamps } from "@/features/asr/modelOptions";
-import { useModelCatalogRevision } from "@/features/asr/modelRegistry";
+import { isVolcengineFileModel, useModelCatalogRevision } from "@/features/asr/modelRegistry";
 import { ModelPicker } from "@/features/models/ModelPicker";
 import { useAsrUsageIssue, useInUsagePage, useOfferedAsrOptions } from "@/features/models/usage";
 import { MeetingPanel } from "@/views/transcription/MeetingPanel";
@@ -82,9 +84,11 @@ export function TranscriptionModelRow({ label = "识别模型", forSubtitles = f
       hint="识别结果带时间戳，同时用于文稿对齐。"
       message={error
         ? <span role="alert" className="text-[var(--color-err)]">{error}</span>
-        : issue ?? (model && !supportsAlignmentTimestamps(model) && (
-          <span role="status">这个模型没有逐字时间，字幕整段一条、不能做文稿对齐，只适合转出文字。</span>
-        ))}
+        : issue ?? (isVolcengineFileModel(model)
+          ? <span>录音最长 2 小时。需开通豆包语音极速版权限。</span>
+          : model && !supportsAlignmentTimestamps(model) && (
+            <span role="status">这个模型没有逐字时间，字幕整段一条、不能做文稿对齐，只适合转出文字。</span>
+          ))}
     >
       <div className={ROW_CONTROL_W}>
         <ModelPicker
@@ -137,7 +141,8 @@ export function useTranscriptionSettings() {
     onMessage: reportSave,
   });
 
-  return { hasApiKey: Boolean(asrProvider && providerReady(asrProvider, "asr")) };
+  const modelProvider = transcriptionProvider(providers, effectiveAsrId, params.model);
+  return { hasApiKey: Boolean(modelProvider && providerReady(modelProvider, "asr")) };
 }
 
 /**
@@ -147,6 +152,7 @@ export function useTranscriptionSettings() {
 export function FileRecognitionPanel({ output }: { output: "text" | "subtitles" }) {
   useModelCatalogRevision();
   const {
+    params,
     selectedFile,
     stage,
     statusText,
@@ -161,7 +167,8 @@ export function FileRecognitionPanel({ output }: { output: "text" | "subtitles" 
   } = useTranscriptionStore();
   const { hasApiKey } = useTranscriptionSettings();
   const running = stage === "uploading" || stage === "recognizing";
-  const { pickState, message, loadFileInfo, pickFile } = useFilePick(setSelectedFile);
+  const { pickState, message, loadFileInfo, pickFile } = useFilePick(setSelectedFile, params.model);
+  const fileIssue = fileRecognitionIssue(selectedFile, params.model);
   const dragActive = useFileDrop(loadFileInfo);
   const textResult = useMemo(() => plainText(result), [result]);
 
@@ -186,13 +193,14 @@ export function FileRecognitionPanel({ output }: { output: "text" | "subtitles" 
   const statusTone: FileCardStatusTone =
     stage === "completed" ? "ok" : stage === "error" ? "err" : running ? "running" : "idle";
   const cardStatusText =
-    statusText || (selectedFile ? "已就绪，可以开始识别。" : "等待选择文件。");
+    statusText || (fileIssue ? "请重新选择文件。" : selectedFile ? "已就绪，可以开始识别。" : "等待选择文件。");
 
   return (
     <>
       {output === "subtitles" && <Group><TranscriptionModelRow forSubtitles /></Group>}
       <FileCard
         file={selectedFile}
+        model={params.model}
         dragActive={dragActive}
         disabled={pickState === "loading" || running}
         pickState={pickState}
@@ -217,7 +225,7 @@ export function FileRecognitionPanel({ output }: { output: "text" | "subtitles" 
                 取消
               </Button>
             ) : (
-              <Button size="sm" variant="primary" onClick={startTranscription} disabled={!selectedFile}>
+              <Button size="sm" variant="primary" onClick={startTranscription} disabled={!selectedFile || Boolean(fileIssue)}>
                 开始识别
               </Button>
             )}
@@ -274,11 +282,13 @@ export function FileRecognitionPanel({ output }: { output: "text" | "subtitles" 
 export function TranscriptionView() {
   const { tab, params, saveMessage, setParams } = useTranscriptionStore();
   useTranscriptionSettings();
+  const usesVolcengine = isVolcengineFileModel(params.model);
+  const languageHints = usesVolcengine && params.languageHints.length > 1 ? [] : params.languageHints;
 
   const toggleLanguageHint = (value: string) => {
-    const next = params.languageHints.includes(value)
-      ? params.languageHints.filter((item) => item !== value)
-      : [...params.languageHints, value];
+    const next = languageHints.includes(value)
+      ? languageHints.filter((item) => item !== value)
+      : usesVolcengine ? [value] : [...languageHints, value];
     setParams({ languageHints: next });
   };
 
@@ -294,11 +304,11 @@ export function TranscriptionView() {
             <TranscriptionModelRow />
             <Row label="语种提示">
               <div className="flex flex-wrap justify-end gap-x-4 gap-y-2">
-                <CheckField checked={params.languageHints.length === 0} onChange={() => setParams({ languageHints: [] })}>
+                <CheckField checked={languageHints.length === 0} onChange={() => setParams({ languageHints: [] })}>
                   自动
                 </CheckField>
                 {LANGUAGE_OPTIONS.map((lang) => (
-                  <CheckField key={lang.value} checked={params.languageHints.includes(lang.value)} onChange={() => toggleLanguageHint(lang.value)}>
+                  <CheckField key={lang.value} checked={languageHints.includes(lang.value)} onChange={() => toggleLanguageHint(lang.value)}>
                     {lang.label}
                   </CheckField>
                 ))}
@@ -306,7 +316,7 @@ export function TranscriptionView() {
             </Row>
           </Group>
 
-          <Group title="说话人">
+          {!usesVolcengine && <Group title="说话人">
             <Row label="说话人分离">
               <Switch checked={params.diarizationEnabled} onChange={(checked) => setParams({ diarizationEnabled: checked })} label="说话人分离" />
             </Row>
@@ -323,7 +333,7 @@ export function TranscriptionView() {
                 placeholder="自动"
               />
             </Row>
-          </Group>
+          </Group>}
 
           {saveMessage && <p className="px-0.5 text-xs text-[var(--color-fg-subtle)]" role="status">{saveMessage}</p>}
         </>

@@ -13,11 +13,13 @@ import {
   openProviderSettings,
   splitScriptLines,
   startAlignment,
+  transcriptionProvider,
 } from "@/features/transcription/controller";
 import {
   FileCard,
   type FileCardStatusTone,
   defaultSrtName,
+  fileRecognitionIssue,
   useFileDrop,
   useFilePick,
 } from "@/features/transcription/filePicker";
@@ -30,6 +32,7 @@ import { useTranscriptionStore, type AlignResultView } from "@/store/useTranscri
 
 export function TranscriptAlignPanel() {
   const {
+    params,
     alignFile,
     scriptText,
     alignStage,
@@ -45,10 +48,11 @@ export function TranscriptAlignPanel() {
   } = useTranscriptionStore();
   const providers = useProviderStore((s) => s.profiles);
   const effectiveAsrId = useProviderStore((s) => s.effective("asr"));
-  const asrProvider = providers.find((profile) => profile.id === effectiveAsrId);
+  const asrProvider = transcriptionProvider(providers, effectiveAsrId, params.model);
   const hasApiKey = Boolean(asrProvider && providerReady(asrProvider, "asr"));
 
-  const { pickState, message, loadFileInfo, pickFile } = useFilePick(setAlignFile);
+  const { pickState, message, loadFileInfo, pickFile } = useFilePick(setAlignFile, params.model);
+  const fileIssue = fileRecognitionIssue(alignFile, params.model);
   const running = alignStage === "uploading" || alignStage === "recognizing" || alignStage === "aligning";
   const cancellable = alignStage === "uploading" || alignStage === "recognizing";
   // 本面板只在选中「按文稿对齐」时挂载，拖放只作用于它
@@ -91,12 +95,13 @@ export function TranscriptAlignPanel() {
   const statusTone: FileCardStatusTone =
     alignStage === "completed" ? "ok" : alignStage === "error" ? "err" : running ? "running" : "idle";
   const cardStatusText =
-    alignStatusText || (alignFile ? (lineCount > 0 ? "已就绪，可以开始对齐。" : "请在下方粘贴一行一句的文稿。") : "选择音频并粘贴文稿后开始。");
+    alignStatusText || (fileIssue ? "请重新选择文件。" : alignFile ? (lineCount > 0 ? "已就绪，可以开始对齐。" : "请在下方粘贴一行一句的文稿。") : "选择音频并粘贴文稿后开始。");
 
   return (
     <>
       <FileCard
         file={alignFile}
+        model={params.model}
         dragActive={dragActive}
         disabled={pickState === "loading" || running}
         pickState={pickState}
@@ -121,7 +126,7 @@ export function TranscriptAlignPanel() {
                 取消
               </Button>
             ) : (
-              <Button size="sm" variant="primary" onClick={startAlignment} disabled={!alignFile || lineCount === 0 || running}>
+              <Button size="sm" variant="primary" onClick={startAlignment} disabled={!alignFile || Boolean(fileIssue) || lineCount === 0 || running}>
                 开始对齐
               </Button>
             )}

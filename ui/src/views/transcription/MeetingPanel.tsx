@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Group, Row } from "@/components/ui/Group";
+import { isVolcengineFileModel } from "@/features/asr/modelRegistry";
 import { adoptTranscriptionJob } from "@/features/transcription/controller";
 import { useFilePick } from "@/features/transcription/filePicker";
 import { CMD, cmd, type MeetingRecordingFile, type MeetingStatus } from "@/lib/tauri";
@@ -19,6 +20,7 @@ function formatElapsed(ms: number) {
  * 简单模式没有转写的子导航，不显示跳到「识别」设置的那一行。
  */
 export function MeetingPanel({ simple = false }: { simple?: boolean } = {}) {
+  const model = useTranscriptionStore((s) => s.params.model);
   const diarizationEnabled = useTranscriptionStore((s) => s.params.diarizationEnabled);
   const setTab = useTranscriptionStore((s) => s.setTab);
   const setSelectedFile = useTranscriptionStore((s) => s.setSelectedFile);
@@ -130,7 +132,7 @@ export function MeetingPanel({ simple = false }: { simple?: boolean } = {}) {
           <Button size="sm" variant="primary" disabled={busy || !status || status.stopping} onClick={() => void start()}>开始录制</Button>
         )}
       </Row>
-      {!simple && (
+      {!simple && !isVolcengineFileModel(model) && (
         <Row label="区分说话人">
           <Button size="sm" variant="text" onClick={() => setTab("settings")}>{diarizationEnabled ? "已开启" : "未开启"}</Button>
         </Row>

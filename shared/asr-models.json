@@ -72,6 +72,34 @@
     "isDefaultFile": false
   },
   {
+    "id": "volcengine-bigasr-file-turbo",
+    "label": "豆包录音文件识别极速版（需开通权限）",
+    "providerId": "volcengine",
+    "category": "file",
+    "protocol": "sdk-volcengine-file",
+    "capabilityId": "volcengine.speech-recognition.bigasr-file-turbo",
+    "sdkCapabilitySource": "volcengine-speech-recognition",
+    "supportsVocabulary": false,
+    "supportsAlignmentTimestamps": true,
+    "scenes": ["transcription"],
+    "isDefaultRealtime": false,
+    "isDefaultFile": false
+  },
+  {
+    "id": "volcengine-doubao-mt",
+    "label": "豆包机器翻译",
+    "providerId": "volcengine",
+    "category": "translation",
+    "protocol": "sdk-capability-translation",
+    "capabilityId": "volcengine-speech.translation.doubao-mt",
+    "sdkCapabilitySource": "volcengine-translation",
+    "supportsVocabulary": false,
+    "supportsAlignmentTimestamps": false,
+    "scenes": ["subtitleTranslation"],
+    "isDefaultRealtime": false,
+    "isDefaultFile": false
+  },
+  {
     "id": "fun-asr-realtime-2026-02-28",
     "label": "Fun-ASR-Realtime",
     "providerId": "bailian",

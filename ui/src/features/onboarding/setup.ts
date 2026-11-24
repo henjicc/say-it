@@ -1,6 +1,6 @@
 import { LLM_PROVIDER_PRESETS } from "@/features/models/llmPresets";
 import { gpuEnough, LOCAL_MODEL_NEEDS, type HardwareSummary } from "@/features/models/localModelNeeds";
-import { providerReady } from "@/features/models/providerModels";
+import { providerReady, providerSecretFields } from "@/features/models/providerModels";
 import { recommendedLlmModels } from "@/features/models/recommendedLlmModels";
 import { ASR_API_KEY_URLS, providerApiKeyUrl } from "@/features/settings/apiKeyLinks";
 import { useDictPrefs } from "@/store/useDictPrefs";
@@ -71,17 +71,18 @@ export type AsrChoice = (typeof ASR_CHOICES)[number];
 export type AsrChoiceKey = AsrChoice["key"];
 
 /** 有专管这种能力的密钥（如火山引擎的方舟密钥只管大模型）时用它，否则用通用的 apiKey。 */
-function scopedSecretField(profile: ProviderProfile, capability: ProviderCapability) {
-  return (profile.configFields ?? []).find((field) => field.secret && field.capability === capability);
+function secretField(profile: ProviderProfile, capability: ProviderCapability) {
+  return providerSecretFields(profile, capability)[0];
 }
 
 function secretFieldFor(profile: ProviderProfile, capability: ProviderCapability): string {
-  return scopedSecretField(profile, capability)?.key ?? "apiKey";
+  return secretField(profile, capability)?.key ?? "apiKey";
 }
 
 /** 密钥输入框的名称：专用密钥用它自己的字段名（如「方舟 API Key」），避免把另一把密钥贴进来。 */
 export function apiKeyLabelFor(profile: ProviderProfile, capability: ProviderCapability): string {
-  return scopedSecretField(profile, capability)?.label ?? `${profile.displayName} API Key`;
+  const label = secretField(profile, capability)?.label;
+  return label && label !== "API Key" ? label : `${profile.displayName} API Key`;
 }
 
 export function apiKeyUrlFor(profile: ProviderProfile, capability: ProviderCapability): string | undefined {

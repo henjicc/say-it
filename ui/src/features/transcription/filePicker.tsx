@@ -6,6 +6,7 @@ import { FileAudio, Upload } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { CMD, cmd } from "@/lib/tauri";
 import { extensionOf } from "@/features/fileDrop/routes";
+import { modelInfo } from "@/features/asr/modelRegistry";
 import type { SelectedTranscriptionFile } from "@/store/useTranscriptionStore";
 
 export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
@@ -49,13 +50,23 @@ export function validateFile(file: SelectedTranscriptionFile) {
   return "";
 }
 
+export function fileRecognitionIssue(file: SelectedTranscriptionFile | null, model: string) {
+  const limits = modelInfo(model)?.fileRecognitionLimits;
+  if (!file || !limits) return "";
+  if (file.size > limits.maxBytes) return `所选模型的文件上限为 ${limits.maxBytes / 1_000_000} MB。`;
+  if (!limits.extensions.includes(extensionOf(file.name || file.path))) {
+    return `所选模型支持 ${limits.extensions.map((ext) => ext.toUpperCase()).join("、")} 文件。`;
+  }
+  return "";
+}
+
 export function defaultSrtName(file: SelectedTranscriptionFile | null, suffix = "") {
   const name = file?.name || "字幕转写结果";
   const dot = name.lastIndexOf(".");
   return `${dot > 0 ? name.slice(0, dot) : name}${suffix}.srt`;
 }
 
-export function useFilePick(onFile: (file: SelectedTranscriptionFile) => void) {
+export function useFilePick(onFile: (file: SelectedTranscriptionFile) => void, model = "") {
   const [pickState, setPickState] = useState<PickState>("idle");
   const [message, setMessage] = useState("");
   const onFileRef = useRef(onFile);
@@ -80,7 +91,7 @@ export function useFilePick(onFile: (file: SelectedTranscriptionFile) => void) {
       const selected = await open({
         multiple: false,
         directory: false,
-        filters: [{ name: "音视频文件", extensions: SUPPORTED_EXTENSIONS }],
+        filters: [{ name: "音视频文件", extensions: modelInfo(model)?.fileRecognitionLimits?.extensions ?? SUPPORTED_EXTENSIONS }],
       });
       if (typeof selected !== "string") {
         setPickState("idle");
@@ -169,6 +180,7 @@ export function FileCard(props: {
   onPick: () => void;
   statusTone: FileCardStatusTone;
   statusText: string;
+  model?: string;
   errorMessage?: string;
   /** 保持可见的保存反馈。 */
   hint?: React.ReactNode;
@@ -176,14 +188,18 @@ export function FileCard(props: {
   /** 右下角主操作（开始识别 / 取消 / 去设置 API Key 等）。 */
   actions?: React.ReactNode;
 }) {
-  const { file, dragActive, disabled, pickState, message, onPick, statusTone, statusText, errorMessage, hint, description, actions } = props;
-  const validationMessage = file ? validateFile(file) : "";
+  const { file, model = "", dragActive, disabled, pickState, message, onPick, statusTone, statusText, errorMessage, hint, description, actions } = props;
+  const limits = modelInfo(model)?.fileRecognitionLimits;
+  const validationMessage = file ? (limits ? fileRecognitionIssue(file, model) : validateFile(file)) : "";
+  const fileHint = limits
+    ? `支持 ${limits.extensions.map((ext) => ext.toUpperCase()).join("、")}，单个文件最大 ${limits.maxBytes / 1_000_000} MB。`
+    : "支持 mp3、wav、m4a、mp4、flac、ogg、webm 等常见格式，单个文件最大 2GB。";
   const running = statusTone === "running";
 
   if (!file) {
     return (
       <div className="flex flex-col gap-2">
-        <Tooltip content="支持 mp3、wav、m4a、mp4、flac、ogg、webm 等常见格式，单个文件最大 2GB。"><button
+        <Tooltip content={fileHint}><button
           type="button"
           onClick={onPick}
           disabled={disabled}

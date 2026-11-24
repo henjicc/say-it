@@ -294,14 +294,14 @@ pub fn config_fields_for(profile: &ProviderProfile) -> Vec<ProviderConfigField> 
                 secret: true,
                 capability: None,
             }],
-            // 语音识别和方舟大模型是火山引擎的两个控制台，各发一把密钥。
+            // 豆包语音的 Key 同时用于识别与机器翻译，方舟大模型使用专用密钥。
             "sdk:volcengine" => vec![
                 ProviderConfigField {
                     key: "apiKey".into(),
                     label: "语音 API Key".into(),
                     field_type: "password".into(),
                     secret: true,
-                    capability: Some("asr".into()),
+                    capability: None,
                 },
                 ProviderConfigField {
                     key: VOLCENGINE_ARK_KEY_FIELD.into(),
@@ -428,7 +428,7 @@ pub fn volcengine_profile() -> ProviderProfile {
         kind: "sdk:volcengine".to_string(),
         display_name: "火山引擎".to_string(),
         auth_kind: "api-key".to_string(),
-        capabilities: vec!["asr".to_string(), "llm".to_string()],
+        capabilities: vec!["asr".to_string(), "llm".to_string(), "translation".to_string()],
         enabled: true,
         config: json!({}),
         config_fields: vec![],
@@ -1351,7 +1351,7 @@ mod tests {
         assert!(fields[0].secret);
         // 火山引擎的语音与方舟大模型各用一把密钥。
         let volcengine = find_profile(&settings, VOLCENGINE_PROVIDER_ID).unwrap();
-        assert_eq!(volcengine.capabilities, vec!["asr", "llm"]);
+        assert_eq!(volcengine.capabilities, vec!["asr", "llm", "translation"]);
         let fields = config_fields_for(volcengine)
             .into_iter()
             .map(|field| (field.key, field.capability, field.secret))
@@ -1359,7 +1359,7 @@ mod tests {
         assert_eq!(
             fields,
             vec![
-                ("apiKey".into(), Some("asr".into()), true),
+                ("apiKey".into(), None, true),
                 (VOLCENGINE_ARK_KEY_FIELD.into(), Some("llm".into()), true),
             ]
         );

@@ -95,13 +95,21 @@ pub struct BuiltinSdkAsrRoute {
 /// 内置在线 ASR 的执行坐标完全由共享模型目录声明；没有 source 的插件、本地和系统模型
 /// 不会误入内置 SDK 运行时。
 pub fn builtin_sdk_asr_route(model: &str) -> Option<BuiltinSdkAsrRoute> {
-    let info = model_info(model)?;
+    let info = model_info(model).filter(|info| matches!(info.category.as_str(), "realtime" | "file"))?;
     Some(BuiltinSdkAsrRoute {
         provider_id: info.provider_id.clone(),
         source: info.sdk_capability_source.as_ref()?.clone(),
         module_id: info.capability_id.as_ref()?.clone(),
         realtime: info.category == "realtime",
     })
+}
+
+pub fn builtin_translation_model(model: &str) -> Option<&'static ModelInfo> {
+    model_info(model).filter(|info| info.category == "translation")
+}
+
+pub fn is_volcengine_file_model(model: &str) -> bool {
+    model_info(model).is_some_and(|info| info.protocol == "sdk-volcengine-file")
 }
 
 /// 判断模型的实时识别协议族。表内模型直接查表，表外模型按前缀兜底。
@@ -274,8 +282,8 @@ mod tests {
 
     #[test]
     fn test_model_count() {
-        // 9 个百炼、4 个 P0 云端模型、Apple 本地实时模型与内置 PP-OCR。
-        assert_eq!(REGISTRY.len(), 15, "当前应有 15 个模型");
+        // 9 个百炼、6 个其他云端模型、Apple 本地实时模型与内置 PP-OCR。
+        assert_eq!(REGISTRY.len(), 17, "当前应有 17 个模型");
     }
 
     #[test]

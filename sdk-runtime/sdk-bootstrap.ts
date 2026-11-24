@@ -7,6 +7,7 @@
     'bailian-translation',
     'volcengine-speech-recognition',
     'volcengine-speech-recognition-realtime',
+    'volcengine-translation',
     'siliconflow-speech-recognition',
     'groq-speech-recognition',
   ] as const
