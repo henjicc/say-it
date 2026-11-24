@@ -173,6 +173,47 @@
 .fd.fd-shake .fd-orb { animation: fd-orb-pop 8s cubic-bezier(0.22, 1, 0.36, 1) infinite, fd-orb-rec 8s ease-in-out infinite; }
 @keyframes fd-orb-pop { 0%, 10.5% { transform: scale(0); opacity: 0; } 13%, 100% { transform: scale(1); opacity: 1; } }
 
+/* 悬浮球与晃动画面没有实时文字，用 5 秒一轮的紧凑节奏：
+   0–20% 点到（或晃出）悬浮球，23–49% 录音约 1.3 秒，再点一下后 54% 文字马上上屏，其余时间停在结果上 */
+.fd.fd-orb-click .fd-cur { animation: fd-cur-orb-q 5s ease-in-out infinite; }
+@keyframes fd-cur-orb-q { 0% { transform: translate(-180px, -60px); } 18%, 100% { transform: translate(0, 0); } }
+.fd.fd-shake .fd-shake-cur { animation: fd-cur-shake-q 5s ease-in-out infinite; }
+@keyframes fd-cur-shake-q { 0%, 16%, 100% { transform: translate(0, 0); } 3%, 10% { transform: translate(-44px, -6px); } 6.5%, 13.5% { transform: translate(44px, 6px); } }
+.fd.fd-orb-click .fd-orb { animation: fd-orb-rec-q 5s ease-in-out infinite; }
+.fd.fd-shake .fd-orb { animation: fd-orb-pop-q 5s cubic-bezier(0.22, 1, 0.36, 1) infinite, fd-orb-rec-q 5s ease-in-out infinite; }
+@keyframes fd-orb-pop-q { 0%, 16% { transform: scale(0); opacity: 0; } 20%, 100% { transform: scale(1); opacity: 1; } }
+@keyframes fd-orb-rec-q { 0%, 21% { background: var(--color-surface-strong); border-color: var(--color-line-strong); } 23%, 47% { background: var(--color-accent-control); border-color: var(--color-accent-control); } 49%, 100% { background: var(--color-surface-strong); border-color: var(--color-line-strong); } }
+.fd.fd-orb-click .fd-orb-wave, .fd.fd-shake .fd-orb-wave { animation: fd-orb-wave-on-q 5s ease-in-out infinite; }
+@keyframes fd-orb-wave-on-q { 0%, 21% { opacity: 0; } 23%, 47% { opacity: 1; } 49%, 100% { opacity: 0; } }
+.fd.fd-orb-click .fd-orb-mic, .fd.fd-shake .fd-orb-mic { animation: fd-orb-mic-on-q 5s ease-in-out infinite; }
+@keyframes fd-orb-mic-on-q { 0%, 21% { opacity: 1; } 23%, 47% { opacity: 0; } 49%, 100% { opacity: 1; } }
+.fd.fd-orb-click .fd-rp, .fd.fd-shake .fd-rp { animation-duration: 5s; }
+.fd.fd-orb-click .fd-rp-start { animation-delay: 1s; }
+.fd.fd-shake .fd-rp-start { animation-delay: 1.1s; }
+.fd.fd-orb-click .fd-rp-stop, .fd.fd-shake .fd-rp-stop { animation-delay: 2.4s; }
+.fd.fd-orb-click .fd-out, .fd.fd-shake .fd-out { animation: fd-out-q 5s linear infinite; }
+@keyframes fd-out-q { 0%, 53.9% { max-width: 0; } 54%, 100% { max-width: 420px; } }
+.fd.fd-orb-click .fd-input:has(.fd-out) .fd-send, .fd.fd-shake .fd-input:has(.fd-out) .fd-send { animation: fd-send-q 5s linear infinite; }
+@keyframes fd-send-q { 0%, 53.9% { background: var(--color-surface-strong); color: var(--color-fg-faint); } 54%, 100% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } }
+.fd.fd-orb-click .fd-s1 { animation: fd-hlq-t1 5s infinite; }
+.fd.fd-orb-click .fd-s1 b { animation: fd-hlq-b1 5s infinite; }
+.fd.fd-orb-click .fd-s2 { animation: fd-hlq-t2 5s infinite; }
+.fd.fd-orb-click .fd-s2 b { animation: fd-hlq-b2 5s infinite; }
+.fd.fd-orb-click .fd-s3 { animation: fd-hlq-t3 5s infinite; }
+.fd.fd-orb-click .fd-s3 b { animation: fd-hlq-b3 5s infinite; }
+.fd.fd-shake .fd-s1 { animation: fd-hlq-t1 5s infinite; }
+.fd.fd-shake .fd-s1 b { animation: fd-hlq-b1 5s infinite; }
+.fd.fd-shake .fd-s2 { animation: fd-hlq-t2 5s infinite; }
+.fd.fd-shake .fd-s2 b { animation: fd-hlq-b2 5s infinite; }
+.fd.fd-shake .fd-s3 { animation: fd-hlq-t3 5s infinite; }
+.fd.fd-shake .fd-s3 b { animation: fd-hlq-b3 5s infinite; }
+@keyframes fd-hlq-t1 { 0%, 20% { color: var(--color-fg); } 21%, 100% { color: var(--color-fg-faint); } }
+@keyframes fd-hlq-t2 { 0%, 20% { color: var(--color-fg-faint); } 21%, 53% { color: var(--color-fg); } 54%, 100% { color: var(--color-fg-faint); } }
+@keyframes fd-hlq-t3 { 0%, 53% { color: var(--color-fg-faint); } 54%, 100% { color: var(--color-fg); } }
+@keyframes fd-hlq-b1 { 0%, 20% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 21%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
+@keyframes fd-hlq-b2 { 0%, 20% { background: var(--color-line); color: var(--color-fg-faint); } 21%, 53% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 54%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
+@keyframes fd-hlq-b3 { 0%, 53% { background: var(--color-line); color: var(--color-fg-faint); } 54%, 100% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } }
+
 /* 智能处理：一段口语化的文字逐处删改，重组成整理好的文字。
    被删或被改的字先变灰划掉再收起，新写的字展开淡入、短暂用强调色标出；整段在一轮末尾淡出再回到原话 */
 .fd-para { position: absolute; left: 10px; top: 54px; width: 420px; height: 52px; padding: 0 16px; box-sizing: border-box; display: flex; align-items: center; border: 1px solid var(--color-line-strong); border-radius: 10px; background: var(--color-surface); font-size: 13px; line-height: 20px; white-space: nowrap; overflow: hidden; }
