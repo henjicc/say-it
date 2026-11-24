@@ -9,7 +9,6 @@ import { Switch } from "@/components/ui/Switch";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { InspectorBody } from "@/components/layout/MasterDetail";
 import { FeatureDemo } from "@/components/FeatureDemo";
-import { useDictationStore } from "@/store/useDictationStore";
 import { SmartTemplateManager } from "@/views/smart-text/SmartTemplateManager";
 import { AutoIntentRow, SmartLlmRow } from "@/views/smart-text/ModelRows";
 import {
@@ -164,8 +163,6 @@ export function SmartTextPanel() {
     }
   };
 
-  const shortcutLabel = useDictationStore((state) => state.shortcutLabel);
-  const pressHoldMode = useDictationStore((state) => state.pressHoldMode);
   const insertPlaceholder = (placeholder: string) => {
     const nextPrompt = `${draftPrompt}${draftPrompt.endsWith("\n") ? "" : "\n"}${placeholder}`;
     setDraftPrompt(nextPrompt);
@@ -175,7 +172,7 @@ export function SmartTextPanel() {
   return (
     <InspectorBody>
       <Group>
-        <FeatureDemo kind="polish" keyLabel={shortcutLabel || undefined} hold={pressHoldMode} />
+        <FeatureDemo kind="polish" />
         <SmartLlmRow />
         <AutoIntentRow />
         <Row

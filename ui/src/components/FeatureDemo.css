@@ -1,7 +1,7 @@
 /* 功能示意：8 秒循环；系统要求减少动态效果时停在「说话中」的代表帧。
    统一时间轴：0–16% 触发，16–55% 说话（胶囊 + 上方实时文字），56–64% 识别中（点阵），66% 起结果上屏。
    胶囊、波形、文字框的尺寸与动效取自原生听写胶囊（overlay-core/src/indicator.rs）：
-   二者同一中轴；出场从下方 10px 淡入滑上；文字框宽度随内容缓动展开，新增文字淡入；识别中胶囊由 96 收到 84。 */
+   二者同一中轴；出场从下方 10px 淡入滑上；新出的字淡入；识别中胶囊由 96 收到 84。 */
 .fd {
   position: relative;
   height: 210px;
@@ -28,8 +28,6 @@
 .fd-txt { display: flex; align-items: center; font-size: 13px; line-height: 20px; white-space: nowrap; }
 .fd-out { display: inline-block; overflow: hidden; white-space: nowrap; vertical-align: bottom; max-width: 420px; }
 .fd-caret { display: inline-block; width: 2px; height: 15px; margin-left: 1px; background: var(--color-accent); }
-/* 逐段出现的文字：宽度随内容缓动展开，同时淡入；--w 是这段文字宽度的上限 */
-.fd-chunk { display: inline-block; overflow: hidden; white-space: pre; vertical-align: bottom; max-width: var(--w); }
 
 /* 胶囊与上方文字框共用同一中轴 */
 .fd-bub, .fd-capbox { position: absolute; left: 0; right: 0; display: flex; justify-content: center; }
@@ -46,7 +44,6 @@
 .fd-cur { position: absolute; width: 18px; height: 22px; }
 .fd-cur path { fill: var(--color-fg); stroke: var(--color-bg-titlebar); }
 .fd-rp { position: absolute; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%; border: 2px solid var(--color-accent); opacity: 0; box-sizing: border-box; }
-.fd-drag { position: absolute; }
 .fd-orb { position: absolute; width: 40px; height: 40px; border-radius: 50%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border: 1px solid var(--color-line-strong); background: var(--color-surface-strong); color: var(--color-fg); }
 .fd-orb-mic, .fd-orb-wave { position: absolute; display: flex; align-items: center; gap: 2px; }
 .fd-orb-mic svg { width: 16px; height: 16px; }
@@ -61,14 +58,12 @@
 .fd-sel-new { opacity: 0; }
 .fd-ans { position: absolute; left: 244px; top: 10px; width: 176px; padding: 8px 12px; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--color-line-strong); border-radius: 8px; background: var(--color-overlay); box-shadow: var(--shadow-popover); }
 .fd-ans-label { font-size: 12px; color: var(--color-fg-subtle); }
-.fd-trail { position: absolute; width: 14px; height: 2px; border-radius: 1px; background: var(--color-fg-muted); opacity: 0; }
-.fd-filler { display: inline-block; overflow: hidden; white-space: pre; vertical-align: bottom; max-width: var(--w); }
-.fd-add { display: inline-block; overflow: hidden; vertical-align: bottom; max-width: 1em; }
 
 /* ---------- 动画 ---------- */
-/* 每段的 animation-delay 定出它在 8 秒里出现的时刻；70% 之后收起，留给下一轮 */
-.fd .fd-chunk { animation: fd-chunk 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
-@keyframes fd-chunk { 0% { max-width: 0; opacity: 0; } 4.5%, 70% { max-width: var(--w); opacity: 1; } 70.1%, 100% { max-width: 0; opacity: 0; } }
+/* 实时文字逐字淡入，文字框一开始就按整句排好，位置不动。
+   每个字的 animation-delay 定出它在 8 秒里出现的时刻；70% 之后隐去，留给下一轮 */
+.fd .fd-ch { animation: fd-ch 8s ease-out infinite backwards; }
+@keyframes fd-ch { 0% { opacity: 0; } 2.5%, 70% { opacity: 1; } 70.1%, 100% { opacity: 0; } }
 
 .fd .fd-wave i { animation: fd-wave 0.9s ease-in-out infinite alternate; }
 .fd .fd-wave i:nth-child(2n) { animation-duration: 0.7s; animation-delay: -0.3s; }
@@ -94,12 +89,6 @@
 .fd .fd-s2 b { animation: fd-hl-b2 8s infinite; }
 .fd .fd-s3 { animation: fd-hl-t3 8s infinite; }
 .fd .fd-s3 b { animation: fd-hl-b3 8s infinite; }
-.fd.fd-orb-click .fd-s1 { animation: fd-hlo-t1 8s infinite; }
-.fd.fd-orb-click .fd-s1 b { animation: fd-hlo-b1 8s infinite; }
-.fd.fd-orb-click .fd-s2 { animation: fd-hlo-t2 8s infinite; }
-.fd.fd-orb-click .fd-s2 b { animation: fd-hlo-b2 8s infinite; }
-.fd.fd-orb-click .fd-s3 { animation: fd-hlo-t3 8s infinite; }
-.fd.fd-orb-click .fd-s3 b { animation: fd-hlo-b3 8s infinite; }
 .fd.fd-polish .fd-s1 { animation: fd-hlp-t1 8s infinite; }
 .fd.fd-polish .fd-s1 b { animation: fd-hlp-b1 8s infinite; }
 .fd.fd-polish .fd-s2 { animation: fd-hlp-t2 8s infinite; }
@@ -112,18 +101,12 @@
 @keyframes fd-hl-b1 { 0%, 16% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 17%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
 @keyframes fd-hl-b2 { 0%, 16% { background: var(--color-line); color: var(--color-fg-faint); } 17%, 64% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 65%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
 @keyframes fd-hl-b3 { 0%, 64% { background: var(--color-line); color: var(--color-fg-faint); } 65%, 100% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } }
-@keyframes fd-hlo-t1 { 0%, 24% { color: var(--color-fg); } 25%, 100% { color: var(--color-fg-faint); } }
-@keyframes fd-hlo-t2 { 0%, 24% { color: var(--color-fg-faint); } 25%, 64% { color: var(--color-fg); } 65%, 100% { color: var(--color-fg-faint); } }
-@keyframes fd-hlo-t3 { 0%, 64% { color: var(--color-fg-faint); } 65%, 100% { color: var(--color-fg); } }
-@keyframes fd-hlo-b1 { 0%, 24% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 25%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
-@keyframes fd-hlo-b2 { 0%, 24% { background: var(--color-line); color: var(--color-fg-faint); } 25%, 64% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 65%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
-@keyframes fd-hlo-b3 { 0%, 64% { background: var(--color-line); color: var(--color-fg-faint); } 65%, 100% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } }
-@keyframes fd-hlp-t1 { 0%, 55% { color: var(--color-fg); } 56%, 100% { color: var(--color-fg-faint); } }
-@keyframes fd-hlp-t2 { 0%, 55% { color: var(--color-fg-faint); } 56%, 65% { color: var(--color-fg); } 66%, 100% { color: var(--color-fg-faint); } }
-@keyframes fd-hlp-t3 { 0%, 65% { color: var(--color-fg-faint); } 66%, 100% { color: var(--color-fg); } }
-@keyframes fd-hlp-b1 { 0%, 55% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 56%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
-@keyframes fd-hlp-b2 { 0%, 55% { background: var(--color-line); color: var(--color-fg-faint); } 56%, 65% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 66%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
-@keyframes fd-hlp-b3 { 0%, 65% { background: var(--color-line); color: var(--color-fg-faint); } 66%, 100% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } }
+@keyframes fd-hlp-t1 { 0%, 20% { color: var(--color-fg); } 21%, 100% { color: var(--color-fg-faint); } }
+@keyframes fd-hlp-t2 { 0%, 20% { color: var(--color-fg-faint); } 21%, 56% { color: var(--color-fg); } 57%, 100% { color: var(--color-fg-faint); } }
+@keyframes fd-hlp-t3 { 0%, 56% { color: var(--color-fg-faint); } 57%, 100% { color: var(--color-fg); } }
+@keyframes fd-hlp-b1 { 0%, 20% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 21%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
+@keyframes fd-hlp-b2 { 0%, 20% { background: var(--color-line); color: var(--color-fg-faint); } 21%, 56% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } 57%, 100% { background: var(--color-line); color: var(--color-fg-faint); } }
+@keyframes fd-hlp-b3 { 0%, 56% { background: var(--color-line); color: var(--color-fg-faint); } 57%, 100% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } }
 
 /* 快捷键：按一下开始、再按一下结束；按住模式下从开始一直按到说完 */
 .fd .fd-key { animation: fd-key 8s infinite; }
@@ -143,13 +126,6 @@
   19%, 55% { opacity: 1; transform: translateY(0); width: 96px; }
   59%, 63% { opacity: 1; transform: translateY(0); width: 84px; }
   67%, 100% { opacity: 0; transform: translateY(10px); width: 84px; }
-}
-.fd.fd-polish .fd-cap { animation-name: fd-cap-polish; }
-@keyframes fd-cap-polish {
-  0%, 15% { opacity: 0; transform: translateY(10px); width: 96px; }
-  19%, 55% { opacity: 1; transform: translateY(0); width: 96px; }
-  59%, 64% { opacity: 1; transform: translateY(0); width: 84px; }
-  68%, 100% { opacity: 0; transform: translateY(10px); width: 84px; }
 }
 .fd .fd-wave { animation: fd-wave-on 8s ease-in-out infinite; }
 @keyframes fd-wave-on { 0%, 54% { opacity: 1; } 57%, 100% { opacity: 0; } }
@@ -187,44 +163,40 @@
 .fd .fd-orb-mic { animation: fd-orb-mic-on 8s ease-in-out infinite; }
 @keyframes fd-orb-mic-on { 0%, 16% { opacity: 1; } 18%, 55% { opacity: 0; } 57%, 100% { opacity: 1; } }
 
-/* 点悬浮球：先按住拖到顺手的位置，松开后再点一下开始 */
-.fd.fd-orb-click .fd-drag { animation: fd-drag 8s ease-in-out infinite; }
-@keyframes fd-drag {
-  0%, 8% { transform: translate(-150px, 4px); }
-  13% { transform: translate(-90px, -18px); }
-  18% { transform: translate(-30px, 10px); }
-  22%, 100% { transform: translate(0, 0); }
-}
-.fd.fd-orb-click .fd-cur { animation: fd-cur-grab 8s ease-in-out infinite; }
-@keyframes fd-cur-grab { 0% { transform: translate(-120px, 30px); } 6%, 100% { transform: translate(0, 0); } }
-.fd.fd-orb-click .fd-orb { animation: fd-orb-lift 8s ease-in-out infinite, fd-orb-rec-o 8s ease-in-out infinite; }
-@keyframes fd-orb-lift { 0%, 7% { transform: scale(1); } 9%, 21% { transform: scale(1.1); } 23%, 100% { transform: scale(1); } }
-@keyframes fd-orb-rec-o { 0%, 26% { background: var(--color-surface-strong); border-color: var(--color-line-strong); } 28%, 55% { background: var(--color-accent-control); border-color: var(--color-accent-control); } 57%, 100% { background: var(--color-surface-strong); border-color: var(--color-line-strong); } }
-.fd.fd-orb-click .fd-orb-wave { animation-name: fd-orb-wave-on-o; }
-@keyframes fd-orb-wave-on-o { 0%, 26% { opacity: 0; } 28%, 55% { opacity: 1; } 57%, 100% { opacity: 0; } }
-.fd.fd-orb-click .fd-orb-mic { animation-name: fd-orb-mic-on-o; }
-@keyframes fd-orb-mic-on-o { 0%, 26% { opacity: 1; } 28%, 55% { opacity: 0; } 57%, 100% { opacity: 1; } }
-.fd.fd-orb-click .fd-rp-start { animation-delay: 2.08s; }
+/* 点悬浮球：光标移到球上点一下开始 */
+.fd.fd-orb-click .fd-cur { animation: fd-cur-orb 8s ease-in-out infinite; }
+@keyframes fd-cur-orb { 0% { transform: translate(-180px, -60px); } 14%, 100% { transform: translate(0, 0); } }
 
 /* 晃动唤出：光标停在哪，悬浮球就出现在哪 */
 .fd .fd-shake-cur { animation: fd-cur-shake 8s ease-in-out infinite; }
-@keyframes fd-cur-shake { 0%, 10%, 100% { transform: translate(0, 0); } 2.5%, 7.5% { transform: translate(-22px, 0); } 5% { transform: translate(22px, 0); } }
-.fd .fd-trail { animation: fd-trail 8s infinite; }
-@keyframes fd-trail { 0%, 1% { opacity: 0; } 2%, 9% { opacity: 0.8; } 11%, 100% { opacity: 0; } }
+@keyframes fd-cur-shake { 0%, 10%, 100% { transform: translate(0, 0); } 2%, 6% { transform: translate(-44px, -6px); } 4%, 8% { transform: translate(44px, 6px); } }
 .fd.fd-shake .fd-orb { animation: fd-orb-pop 8s cubic-bezier(0.22, 1, 0.36, 1) infinite, fd-orb-rec 8s ease-in-out infinite; }
 @keyframes fd-orb-pop { 0%, 10.5% { transform: scale(0); opacity: 0; } 13%, 100% { transform: scale(1); opacity: 1; } }
 
-/* 智能处理：说完后划掉口头语、补上标点，再整段上屏 */
-.fd.fd-polish .fd-bub > div { animation-name: fd-bub-polish; }
-@keyframes fd-bub-polish { 0%, 19% { opacity: 0; transform: translateY(10px); } 22%, 63% { opacity: 1; transform: translateY(0); } 66%, 100% { opacity: 0; transform: translateY(0); } }
-.fd .fd-filler { animation: fd-filler 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
-@keyframes fd-filler {
-  0%, 56% { max-width: var(--w); opacity: 1; color: var(--color-fg); }
-  58% { max-width: var(--w); opacity: 0.6; color: var(--color-fg-faint); }
-  62%, 100% { max-width: 0; opacity: 0; color: var(--color-fg-faint); }
-}
-.fd .fd-add { animation: fd-add 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
-@keyframes fd-add { 0%, 59% { max-width: 0; opacity: 0; } 62%, 100% { max-width: 1em; opacity: 1; } }
+/* 智能处理：一段口语化的文字逐处删改，重组成整理好的文字。
+   被删或被改的字先变灰划掉再收起，新写的字展开淡入、短暂用强调色标出；整段在一轮末尾淡出再回到原话 */
+.fd-para { position: absolute; left: 10px; top: 54px; width: 420px; height: 52px; padding: 0 16px; box-sizing: border-box; display: flex; align-items: center; border: 1px solid var(--color-line-strong); border-radius: 10px; background: var(--color-surface); font-size: 13px; line-height: 20px; white-space: nowrap; overflow: hidden; }
+.fd-old, .fd-new { display: inline-block; overflow: hidden; white-space: pre; vertical-align: bottom; }
+.fd-old { max-width: 0; opacity: 0; text-decoration: line-through; text-decoration-color: transparent; }
+.fd-new { max-width: var(--w); }
+.fd .fd-para { animation: fd-para 8s ease-in-out infinite; }
+@keyframes fd-para { 0% { opacity: 0; } 3%, 90% { opacity: 1; } 96%, 100% { opacity: 0; } }
+.fd .fd-old.fd-e1 { animation: fd-old1 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+.fd .fd-new.fd-e1 { animation: fd-new1 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+@keyframes fd-old1 { 0%, 22% { max-width: var(--w); opacity: 1; color: var(--color-fg); text-decoration-color: transparent; } 25% { max-width: var(--w); opacity: 0.7; color: var(--color-fg-faint); text-decoration-color: var(--color-fg-faint); } 29%, 100% { max-width: 0; opacity: 0; color: var(--color-fg-faint); text-decoration-color: var(--color-fg-faint); } }
+@keyframes fd-new1 { 0%, 28% { max-width: 0; opacity: 0; color: var(--color-accent-text); } 32% { max-width: var(--w); opacity: 1; color: var(--color-accent-text); } 44%, 100% { max-width: var(--w); opacity: 1; color: var(--color-fg); } }
+.fd .fd-old.fd-e2 { animation: fd-old2 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+.fd .fd-new.fd-e2 { animation: fd-new2 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+@keyframes fd-old2 { 0%, 30% { max-width: var(--w); opacity: 1; color: var(--color-fg); text-decoration-color: transparent; } 33% { max-width: var(--w); opacity: 0.7; color: var(--color-fg-faint); text-decoration-color: var(--color-fg-faint); } 37%, 100% { max-width: 0; opacity: 0; color: var(--color-fg-faint); text-decoration-color: var(--color-fg-faint); } }
+@keyframes fd-new2 { 0%, 36% { max-width: 0; opacity: 0; color: var(--color-accent-text); } 40% { max-width: var(--w); opacity: 1; color: var(--color-accent-text); } 52%, 100% { max-width: var(--w); opacity: 1; color: var(--color-fg); } }
+.fd .fd-old.fd-e3 { animation: fd-old3 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+.fd .fd-new.fd-e3 { animation: fd-new3 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+@keyframes fd-old3 { 0%, 38% { max-width: var(--w); opacity: 1; color: var(--color-fg); text-decoration-color: transparent; } 41% { max-width: var(--w); opacity: 0.7; color: var(--color-fg-faint); text-decoration-color: var(--color-fg-faint); } 45%, 100% { max-width: 0; opacity: 0; color: var(--color-fg-faint); text-decoration-color: var(--color-fg-faint); } }
+@keyframes fd-new3 { 0%, 44% { max-width: 0; opacity: 0; color: var(--color-accent-text); } 48% { max-width: var(--w); opacity: 1; color: var(--color-accent-text); } 60%, 100% { max-width: var(--w); opacity: 1; color: var(--color-fg); } }
+.fd .fd-old.fd-e4 { animation: fd-old4 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+.fd .fd-new.fd-e4 { animation: fd-new4 8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+@keyframes fd-old4 { 0%, 46% { max-width: var(--w); opacity: 1; color: var(--color-fg); text-decoration-color: transparent; } 49% { max-width: var(--w); opacity: 0.7; color: var(--color-fg-faint); text-decoration-color: var(--color-fg-faint); } 53%, 100% { max-width: 0; opacity: 0; color: var(--color-fg-faint); text-decoration-color: var(--color-fg-faint); } }
+@keyframes fd-new4 { 0%, 52% { max-width: 0; opacity: 0; color: var(--color-accent-text); } 56% { max-width: var(--w); opacity: 1; color: var(--color-accent-text); } 68%, 100% { max-width: var(--w); opacity: 1; color: var(--color-fg); } }
 
 @media (prefers-reduced-motion: reduce) {
   .fd, .fd * { animation: none !important; }
