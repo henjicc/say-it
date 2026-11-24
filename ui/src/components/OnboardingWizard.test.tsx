@@ -55,7 +55,8 @@ vi.mock("@/features/audio/useMicLevel", () => ({
 vi.mock("@/views/dictation/DictationSections", () => ({
   MicRow: () => null,
   ShortcutRows: () => null,
-  OrbGestureSection: () => null,
+  OrbSection: () => null,
+  GestureSection: () => null,
 }));
 vi.mock("@/features/dictation/hotkeys", () => ({ shortcutLabel: () => "CapsLock" }));
 vi.mock("@/store/useDictationStore", () => ({

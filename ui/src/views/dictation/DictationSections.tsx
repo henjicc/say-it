@@ -216,10 +216,8 @@ function ReadinessGroup() {
   );
 }
 
-/** withAppearance：同时列出悬浮球的大小、不透明度和自动回车；首次引导只要开关。 */
-/** withDemo：分组顶部放功能示意，鼠标停在分组上时播放；停在「左键快速连击」行上时示意换成连击。 */
-export function OrbGestureSection({ withAppearance = false, withDemo = false }: { withAppearance?: boolean; withDemo?: boolean }) {
-  const [demoHover, setDemoHover] = useState<"orb" | "gesture" | "clicks" | null>(null);
+/** page：作为单独一页时，顶部放功能示意并列出大小、不透明度和自动回车；首次引导只要带标题的开关。 */
+export function OrbSection({ page = false }: { page?: boolean }) {
   const floatingOrb = useFloatingOrbStore((state) => state.settings);
   const floatingOrbBusy = useFloatingOrbStore((state) => state.busy);
   const floatingOrbError = useFloatingOrbStore((state) => state.error);
@@ -227,125 +225,119 @@ export function OrbGestureSection({ withAppearance = false, withDemo = false }: 
   const setFloatingOrbAutoEnter = useFloatingOrbStore((state) => state.setAutoEnter);
   const updateFloatingOrbAppearance = useFloatingOrbStore((state) => state.updateAppearance);
   const orbOff = !floatingOrb.enabled;
+
+  return (
+    <Group title={page ? undefined : "悬浮球"}>
+      {page && <FeatureDemo kind="orb" />}
+      <Row
+        label="启用悬浮球"
+        hint="点击悬浮球开始或停止语音输入，右键也能调整这些设置。识别结果会保留在剪贴板。"
+        message={floatingOrbError && <span role="alert" className="text-[var(--color-err)]">保存悬浮球设置失败：{floatingOrbError}</span>}
+      >
+        <Switch
+          checked={floatingOrb.enabled}
+          disabled={floatingOrbBusy}
+          onChange={(enabled) => void setFloatingOrbEnabled(enabled).catch(() => undefined)}
+          label="启用悬浮球"
+        />
+      </Row>
+      {page && <>
+      <SliderRow
+        label="大小"
+        min={FLOATING_ORB_SIZE_PERCENT_RANGE.min}
+        max={FLOATING_ORB_SIZE_PERCENT_RANGE.max}
+        step={1}
+        value={floatingOrb.sizePercent}
+        disabled={orbOff}
+        format={(value) => `${(value / 10).toFixed(1)}%`}
+        onChange={(sizePercent) => void updateFloatingOrbAppearance({ sizePercent }).catch(() => undefined)}
+      />
+      <SliderRow
+        label="不透明度"
+        min={FLOATING_ORB_OPACITY_RANGE.min}
+        max={FLOATING_ORB_OPACITY_RANGE.max}
+        step={1}
+        value={floatingOrb.opacity}
+        disabled={orbOff}
+        format={(value) => `${value}%`}
+        onChange={(opacity) => void updateFloatingOrbAppearance({ opacity }).catch(() => undefined)}
+      />
+      <Row label="自动回车" hint="识别完成后自动发送，悬浮球上不再显示回车图标。" disabled={orbOff}>
+        <Switch
+          checked={floatingOrb.autoEnter}
+          disabled={orbOff || floatingOrbBusy}
+          onChange={(enabled) => void setFloatingOrbAutoEnter(enabled).catch(() => undefined)}
+          label="自动回车"
+        />
+      </Row>
+      </>}
+    </Group>
+  );
+}
+
+/** page：作为单独一页时，顶部放功能示意，分组不加标题。 */
+export function GestureSection({ page = false }: { page?: boolean }) {
   const mouseGesture = useMouseGestureStore((state) => state.settings);
   const mouseGestureBusy = useMouseGestureStore((state) => state.busy);
   const mouseGestureError = useMouseGestureStore((state) => state.error);
   const updateMouseGesture = useMouseGestureStore((state) => state.update);
   const gestureOff = !mouseGesture.enabled;
 
+
   return (
-    <>
-      <div onMouseEnter={() => setDemoHover("orb")} onMouseLeave={() => setDemoHover(null)} className="contents">
-      <Group title="悬浮球">
-        {withDemo && <FeatureDemo kind="orb" play={demoHover === "orb"} />}
-        <Row
-          label="启用悬浮球"
-          hint="点击悬浮球开始或停止语音输入，右键也能调整这些设置。识别结果会保留在剪贴板。"
-          message={floatingOrbError && <span role="alert" className="text-[var(--color-err)]">保存悬浮球设置失败：{floatingOrbError}</span>}
-        >
-          <Switch
-            checked={floatingOrb.enabled}
-            disabled={floatingOrbBusy}
-            onChange={(enabled) => void setFloatingOrbEnabled(enabled).catch(() => undefined)}
-            label="启用悬浮球"
-          />
-        </Row>
-        {withAppearance && <>
-        <SliderRow
-          label="大小"
-          min={FLOATING_ORB_SIZE_PERCENT_RANGE.min}
-          max={FLOATING_ORB_SIZE_PERCENT_RANGE.max}
-          step={1}
-          value={floatingOrb.sizePercent}
-          disabled={orbOff}
-          format={(value) => `${(value / 10).toFixed(1)}%`}
-          onChange={(sizePercent) => void updateFloatingOrbAppearance({ sizePercent }).catch(() => undefined)}
-        />
-        <SliderRow
-          label="不透明度"
-          min={FLOATING_ORB_OPACITY_RANGE.min}
-          max={FLOATING_ORB_OPACITY_RANGE.max}
-          step={1}
-          value={floatingOrb.opacity}
-          disabled={orbOff}
-          format={(value) => `${value}%`}
-          onChange={(opacity) => void updateFloatingOrbAppearance({ opacity }).catch(() => undefined)}
-        />
-        <Row label="自动回车" hint="识别完成后自动发送，悬浮球上不再显示回车图标。" disabled={orbOff}>
-          <Switch
-            checked={floatingOrb.autoEnter}
-            disabled={orbOff || floatingOrbBusy}
-            onChange={(enabled) => void setFloatingOrbAutoEnter(enabled).catch(() => undefined)}
-            label="自动回车"
-          />
-        </Row>
-        </>}
-      </Group>
-      </div>
-      <div onMouseEnter={() => setDemoHover("gesture")} onMouseLeave={() => setDemoHover(null)} className="contents">
-      <Group title="鼠标手势">
-        {withDemo && (
-          <FeatureDemo
-            kind={demoHover === "clicks" ? "clicks" : mouseGesture.mode === "direct" ? "shakeDirect" : "shake"}
-            play={demoHover === "gesture" || demoHover === "clicks"}
-            clickCount={mouseGesture.rapidClickCount}
-          />
-        )}
-        <Row
+    <Group title={page ? undefined : "鼠标手势"}>
+      {page && <FeatureDemo kind={mouseGesture.mode === "direct" ? "shakeDirect" : "shake"} />}
+      <Row
+        label="启用鼠标手势"
+        message={mouseGestureError && <span role="alert" className="text-[var(--color-err)]">鼠标手势不可用：{mouseGestureError}</span>}
+      >
+        <Switch
+          checked={mouseGesture.enabled}
+          disabled={mouseGestureBusy}
+          onChange={(enabled) => void updateMouseGesture({ enabled }).catch(() => undefined)}
           label="启用鼠标手势"
-          message={mouseGestureError && <span role="alert" className="text-[var(--color-err)]">鼠标手势不可用：{mouseGestureError}</span>}
-        >
-          <Switch
-            checked={mouseGesture.enabled}
-            disabled={mouseGestureBusy}
-            onChange={(enabled) => void updateMouseGesture({ enabled }).catch(() => undefined)}
-            label="启用鼠标手势"
-          />
-        </Row>
-        <Row label="晃动后" disabled={gestureOff}>
-          <Select
-            className={ROW_CONTROL_W}
-            aria-label="晃动后"
-            value={mouseGesture.mode}
-            disabled={gestureOff}
-            onChange={(event) => void updateMouseGesture({ mode: event.target.value as "confirm" | "direct" }).catch(() => undefined)}
-          >
-            <option value="confirm">显示悬浮球，点击后开始</option>
-            <option value="direct">直接开始或停止</option>
-          </Select>
-        </Row>
-        <SliderRow
-          label="晃动灵敏度"
-          hint="数值越低越不容易误触发。"
-          min={0}
-          max={100}
-          step={5}
-          value={mouseGesture.sensitivity}
-          disabled={gestureOff}
-          format={(value) => `${value}%`}
-          onChange={(sensitivity) => void updateMouseGesture({ sensitivity }).catch(() => undefined)}
         />
-        <div onMouseEnter={() => setDemoHover("clicks")} onMouseLeave={() => setDemoHover("gesture")}>
-        <Row label="左键快速连击" disabled={gestureOff}>
-          <Select
-            className="w-32"
-            aria-label="连击次数"
-            value={String(mouseGesture.rapidClickCount)}
-            disabled={gestureOff || !mouseGesture.rapidClickEnabled}
-            onChange={(event) => void updateMouseGesture({ rapidClickCount: Number(event.target.value) }).catch(() => undefined)}
-          >
-            {[3, 4, 5, 6, 7, 8, 9, 10].map((count) => <option key={count} value={String(count)}>{`连击 ${count} 次`}</option>)}
-          </Select>
-          <Switch
-            checked={mouseGesture.rapidClickEnabled}
-            disabled={gestureOff}
-            onChange={(rapidClickEnabled) => void updateMouseGesture({ rapidClickEnabled }).catch(() => undefined)}
-            label="启用左键快速连击"
-          />
-        </Row>
-        </div>
-      </Group>
-      </div>
-    </>
+      </Row>
+      <Row label="晃动后" disabled={gestureOff}>
+        <Select
+          className={ROW_CONTROL_W}
+          aria-label="晃动后"
+          value={mouseGesture.mode}
+          disabled={gestureOff}
+          onChange={(event) => void updateMouseGesture({ mode: event.target.value as "confirm" | "direct" }).catch(() => undefined)}
+        >
+          <option value="confirm">显示悬浮球，点击后开始</option>
+          <option value="direct">直接开始或停止</option>
+        </Select>
+      </Row>
+      <SliderRow
+        label="晃动灵敏度"
+        hint="数值越低越不容易误触发。"
+        min={0}
+        max={100}
+        step={5}
+        value={mouseGesture.sensitivity}
+        disabled={gestureOff}
+        format={(value) => `${value}%`}
+        onChange={(sensitivity) => void updateMouseGesture({ sensitivity }).catch(() => undefined)}
+      />
+      <Row label="左键快速连击" disabled={gestureOff}>
+        <Select
+          className="w-32"
+          aria-label="连击次数"
+          value={String(mouseGesture.rapidClickCount)}
+          disabled={gestureOff || !mouseGesture.rapidClickEnabled}
+          onChange={(event) => void updateMouseGesture({ rapidClickCount: Number(event.target.value) }).catch(() => undefined)}
+        >
+          {[3, 4, 5, 6, 7, 8, 9, 10].map((count) => <option key={count} value={String(count)}>{`连击 ${count} 次`}</option>)}
+        </Select>
+        <Switch
+          checked={mouseGesture.rapidClickEnabled}
+          disabled={gestureOff}
+          onChange={(rapidClickEnabled) => void updateMouseGesture({ rapidClickEnabled }).catch(() => undefined)}
+          label="启用左键快速连击"
+        />
+      </Row>
+    </Group>
   );
 }

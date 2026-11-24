@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AppWindow, Keyboard, ListChecks, MousePointer2, SlidersHorizontal, Sparkles } from "lucide-react";
+import { AppWindow, CircleDot, Keyboard, ListChecks, MousePointer2, SlidersHorizontal, Sparkles } from "lucide-react";
 import { Switch } from "@/components/ui/Switch";
 import { HelpLabel } from "@/components/ui/Tooltip";
 import { InspectorBody, InspectorHeader, MasterDetail, NodeList, type NodeItem } from "@/components/layout/MasterDetail";
@@ -10,7 +10,7 @@ import { LocalRulesPanel } from "@/views/LocalRulesPanel";
 import { SmartTextPanel } from "@/views/SmartTextPanel";
 import { AppProfilesPanel } from "@/views/AppProfilesPanel";
 import { ShortcutProfilesPanel } from "@/views/ShortcutProfilesPanel";
-import { BasicsSection, OrbGestureSection } from "./DictationSections";
+import { BasicsSection, GestureSection, OrbSection } from "./DictationSections";
 
 const iconProps = { strokeWidth: 1.6, "aria-hidden": true } as const;
 
@@ -22,7 +22,8 @@ const NODE_TITLES: Record<DictationNodeKey, string> = {
   rules: "本地规则",
   apps: "按软件区分",
   shortcuts: "按快捷键区分",
-  orbGesture: "悬浮球与手势",
+  orb: "悬浮球",
+  gesture: "鼠标手势",
 };
 
 export function DictationPage() {
@@ -42,7 +43,8 @@ export function DictationPage() {
     // 顺序即流程：怎么开始说话 → 说完默认怎么处理 → 哪些情况换一种处理。
     // 后两项都是对默认处理的例外：快捷键方案选「跟随场景」时用按软件区分的规则，否则以快捷键方案为准。
     { key: "basics", label: NODE_TITLES.basics, icon: <SlidersHorizontal {...iconProps} /> },
-    { key: "orbGesture", label: NODE_TITLES.orbGesture, icon: <MousePointer2 {...iconProps} /> },
+    { key: "orb", label: NODE_TITLES.orb, icon: <CircleDot {...iconProps} /> },
+    { key: "gesture", label: NODE_TITLES.gesture, icon: <MousePointer2 {...iconProps} /> },
     { key: "smart", label: NODE_TITLES.smart, icon: <Sparkles {...iconProps} />, off: !prefs.smartProcessingEnabled, dividerBefore: true },
     { key: "rules", label: NODE_TITLES.rules, icon: <ListChecks {...iconProps} />, off: !prefs.localRulesEnabled },
     { key: "apps", label: NODE_TITLES.apps, icon: <AppWindow {...iconProps} />, dividerBefore: true },
@@ -86,7 +88,8 @@ export function DictationPage() {
           <ShortcutProfilesPanel />
         </>
       )}
-      {node === "orbGesture" && <><InspectorHeader title={NODE_TITLES.orbGesture} /><InspectorBody><OrbGestureSection withAppearance withDemo /></InspectorBody></>}
+      {node === "orb" && <><InspectorHeader title={NODE_TITLES.orb} /><InspectorBody><OrbSection page /></InspectorBody></>}
+      {node === "gesture" && <><InspectorHeader title={NODE_TITLES.gesture} /><InspectorBody><GestureSection page /></InspectorBody></>}
     </MasterDetail>
   );
 }

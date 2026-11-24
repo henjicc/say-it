@@ -2,7 +2,7 @@ import { Group } from "@/components/ui/Group";
 import { Textarea } from "@/components/ui/Input";
 import { shortcutLabel } from "@/features/dictation/hotkeys";
 import { useDictationStore } from "@/store/useDictationStore";
-import { OrbGestureSection, ShortcutRows } from "@/views/dictation/DictationSections";
+import { GestureSection, OrbSection, ShortcutRows } from "@/views/dictation/DictationSections";
 import { StepBody, StepError, StepFooter } from "./StepLayout";
 
 export function TriggerStep({
@@ -22,7 +22,8 @@ export function TriggerStep({
     <>
       <StepBody label="唤起方式">
         <Group><ShortcutRows /></Group>
-        <OrbGestureSection />
+        <OrbSection />
+        <GestureSection />
         <Textarea
           aria-label="试一试"
           rows={3}

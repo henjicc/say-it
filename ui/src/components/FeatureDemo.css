@@ -1,4 +1,4 @@
-/* 功能示意：静止时显示「说话中」的代表帧，.fd-play 时按 8 秒循环演示。
+/* 功能示意：按 8 秒循环演示；减少动态效果时停在「说话中」的代表帧。
    统一时间轴：0–16% 触发，18–54% 说话（胶囊 + 上方实时文字），56–64% 识别中（点阵），66% 起出结果。
    胶囊、波形和上方文字的尺寸取自原生听写胶囊（overlay-core/src/indicator.rs）。 */
 .fd {
@@ -18,10 +18,15 @@
 .fd-steps b { display: inline-flex; width: 16px; height: 16px; border-radius: 8px; align-items: center; justify-content: center; font-weight: 500; font-size: 11px; background: var(--color-line); color: var(--color-fg-muted); }
 
 .fd-key { position: absolute; left: 20px; top: 121px; height: 28px; padding: 0 10px; display: flex; align-items: center; border: 1px solid var(--color-line-strong); border-bottom-width: 3px; border-radius: 6px; background: var(--color-surface-strong); font-size: 12px; white-space: nowrap; box-sizing: border-box; }
-.fd-win { position: absolute; left: 20px; top: 6px; width: 400px; height: 62px; padding: 12px 14px; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--color-line); border-radius: 8px; background: var(--color-surface); }
+.fd-input { position: absolute; left: 20px; top: 14px; width: 400px; height: 44px; padding: 0 6px 0 14px; box-sizing: border-box; display: flex; align-items: center; gap: 10px; border: 1px solid var(--color-line-strong); border-radius: 10px; background: var(--color-surface); }
+.fd-input .fd-txt { flex: 1; min-width: 0; overflow: hidden; }
+.fd-send { flex: none; width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: var(--color-accent-control); color: var(--color-accent-control-contrast); }
+.fd-send svg { width: 16px; height: 16px; }
+.fd-doc { position: absolute; left: 20px; top: 6px; width: 240px; height: 62px; padding: 12px 14px; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--color-line); border-radius: 8px; background: var(--color-surface); }
 .fd-ph { flex: none; height: 6px; border-radius: 3px; background: var(--color-line); }
 .fd-txt { display: flex; align-items: center; font-size: 13px; line-height: 20px; white-space: nowrap; }
 .fd-ty { display: inline-block; overflow: hidden; white-space: nowrap; vertical-align: bottom; max-width: 420px; }
+.fd-out { display: inline-block; overflow: hidden; white-space: nowrap; vertical-align: bottom; max-width: 420px; }
 .fd-caret { display: inline-block; width: 2px; height: 15px; margin-left: 1px; background: var(--color-accent); }
 
 .fd-cap { position: absolute; left: 182px; top: 118px; width: 96px; height: 34px; border-radius: 17px; overflow: hidden; box-sizing: border-box; border: 1px solid var(--color-line-strong); background: var(--color-bg-titlebar); }
@@ -47,26 +52,25 @@
 .fd-sel-new { opacity: 0; }
 .fd-ans { position: absolute; left: 244px; top: 10px; width: 176px; padding: 8px 12px; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--color-line-strong); border-radius: 8px; background: var(--color-overlay); box-shadow: var(--shadow-popover); }
 .fd-ans-label { font-size: 12px; color: var(--color-fg-subtle); }
-.fd-badge { position: absolute; height: 20px; padding: 0 7px; border-radius: 10px; display: flex; align-items: center; font-size: 12px; opacity: 0; background: var(--color-accent-control); color: var(--color-accent-control-contrast); }
 .fd-trail { position: absolute; width: 14px; height: 2px; border-radius: 1px; background: var(--color-fg-muted); opacity: 0; }
 
 /* ---------- 动画 ---------- */
-.fd-play .fd-wave i, .fd-play .fd-orb-wave i { animation: fd-wave 0.42s ease-in-out infinite alternate; }
-.fd-play .fd-wave i:nth-child(3n), .fd-play .fd-orb-wave i:nth-child(2n) { animation-delay: 0.14s; }
-.fd-play .fd-wave i:nth-child(3n + 1) { animation-delay: 0.28s; }
-.fd-play .fd-wave i:nth-child(4n) { animation-duration: 0.36s; }
+.fd .fd-wave i, .fd .fd-orb-wave i { animation: fd-wave 0.42s ease-in-out infinite alternate; }
+.fd .fd-wave i:nth-child(3n), .fd .fd-orb-wave i:nth-child(2n) { animation-delay: 0.14s; }
+.fd .fd-wave i:nth-child(3n + 1) { animation-delay: 0.28s; }
+.fd .fd-wave i:nth-child(4n) { animation-duration: 0.36s; }
 @keyframes fd-wave { from { transform: scaleY(0.25); } to { transform: scaleY(1); } }
-.fd-play .fd-dots i { animation: fd-dot 0.8s ease-in-out infinite; }
+.fd .fd-dots i { animation: fd-dot 0.8s ease-in-out infinite; }
 @keyframes fd-dot { 0%, 100% { opacity: 0.25; } 30% { opacity: 1; } }
-.fd-play .fd-caret { animation: fd-blink 1s steps(1) infinite; }
+.fd .fd-caret { animation: fd-blink 1s steps(1) infinite; }
 @keyframes fd-blink { 50% { opacity: 0; } }
 
-.fd-play .fd-s1 { animation: fd-hl1 8s infinite; }
-.fd-play .fd-s2 { animation: fd-hl2 8s infinite; }
-.fd-play .fd-s3 { animation: fd-hl3 8s infinite; }
-.fd-play .fd-s1 b { animation: fd-hb1 8s infinite; }
-.fd-play .fd-s2 b { animation: fd-hb2 8s infinite; }
-.fd-play .fd-s3 b { animation: fd-hb3 8s infinite; }
+.fd .fd-s1 { animation: fd-hl1 8s infinite; }
+.fd .fd-s2 { animation: fd-hl2 8s infinite; }
+.fd .fd-s3 { animation: fd-hl3 8s infinite; }
+.fd .fd-s1 b { animation: fd-hb1 8s infinite; }
+.fd .fd-s2 b { animation: fd-hb2 8s infinite; }
+.fd .fd-s3 b { animation: fd-hb3 8s infinite; }
 @keyframes fd-hl1 { 0%, 16% { color: var(--color-fg); } 17%, 100% { color: var(--color-fg-faint); } }
 @keyframes fd-hl2 { 0%, 16% { color: var(--color-fg-faint); } 17%, 64% { color: var(--color-fg); } 65%, 100% { color: var(--color-fg-faint); } }
 @keyframes fd-hl3 { 0%, 64% { color: var(--color-fg-faint); } 65%, 100% { color: var(--color-fg); } }
@@ -75,8 +79,8 @@
 @keyframes fd-hb3 { 0%, 64% { background: var(--color-line); color: var(--color-fg-faint); } 65%, 100% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } }
 
 /* 快捷键：按一下开始、再按一下结束；按住模式下从开始一直按到说完 */
-.fd-play .fd-key { animation: fd-key 8s infinite; }
-.fd-play.fd-hold .fd-key { animation-name: fd-key-hold; }
+.fd .fd-key { animation: fd-key 8s infinite; }
+.fd.fd-hold .fd-key { animation-name: fd-key-hold; }
 @keyframes fd-key {
   0%, 8%, 13%, 52%, 57%, 100% { transform: translateY(0); background: var(--color-surface-strong); border-color: var(--color-line-strong); color: var(--color-fg); }
   10%, 12%, 54%, 56% { transform: translateY(2px); background: var(--color-accent-control); border-color: var(--color-accent-control); color: var(--color-accent-control-contrast); }
@@ -86,62 +90,58 @@
   10%, 54% { transform: translateY(2px); background: var(--color-accent-control); border-color: var(--color-accent-control); color: var(--color-accent-control-contrast); }
 }
 
-.fd-play .fd-cap { animation: fd-cap 8s infinite; }
+.fd .fd-cap { animation: fd-cap 8s infinite; }
 @keyframes fd-cap { 0%, 15% { opacity: 0; transform: translateY(6px); } 18%, 64% { opacity: 1; transform: translateY(0); } 67%, 100% { opacity: 0; transform: translateY(6px); } }
-.fd-play .fd-wave { animation: fd-wave-on 8s infinite; }
+.fd .fd-wave { animation: fd-wave-on 8s infinite; }
 @keyframes fd-wave-on { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
-.fd-play .fd-dots { animation: fd-dots-on 8s infinite; }
+.fd .fd-dots { animation: fd-dots-on 8s infinite; }
 @keyframes fd-dots-on { 0%, 55% { opacity: 0; } 56%, 64% { opacity: 1; } 66%, 100% { opacity: 0; } }
-.fd-play .fd-bub > div { animation: fd-bub 8s infinite; }
+.fd .fd-bub > div { animation: fd-bub 8s infinite; }
 @keyframes fd-bub { 0%, 19% { opacity: 0; transform: translateY(6px); } 22%, 54% { opacity: 1; transform: translateY(0); } 57%, 100% { opacity: 0; } }
-.fd-play .fd-bub .fd-ty { animation: fd-say 8s steps(12) infinite; }
+.fd .fd-bub .fd-ty { animation: fd-say 8s steps(12) infinite; }
 @keyframes fd-say { 0%, 22% { max-width: 0; } 50%, 100% { max-width: 180px; } }
 /* 结果整段粘贴进输入框：一次出现，不逐字打出 */
-.fd-play .fd-out { animation: fd-out 8s linear infinite; }
-@keyframes fd-out { 0%, 65.9% { opacity: 0; } 66%, 100% { opacity: 1; } }
+.fd .fd-out { animation: fd-out 8s linear infinite; }
+@keyframes fd-out { 0%, 65.9% { max-width: 0; } 66%, 100% { max-width: 420px; } }
+.fd .fd-input:has(.fd-out) .fd-send { animation: fd-send 8s linear infinite; }
+@keyframes fd-send { 0%, 65.9% { background: var(--color-surface-strong); color: var(--color-fg-faint); } 66%, 100% { background: var(--color-accent-control); color: var(--color-accent-control-contrast); } }
 
-.fd-play .fd-sel-bg { animation: fd-sel-bg 8s infinite; }
+.fd .fd-sel-bg { animation: fd-sel-bg 8s infinite; }
 @keyframes fd-sel-bg { 0%, 2% { width: 0; opacity: 1; } 9%, 65.9% { width: 100%; opacity: 1; } 66%, 100% { width: 100%; opacity: 0; } }
-.fd-play .fd-sel-old { animation: fd-sel-old 8s linear infinite; }
+.fd .fd-sel-old { animation: fd-sel-old 8s linear infinite; }
 @keyframes fd-sel-old { 0%, 65.9% { opacity: 1; } 66%, 100% { opacity: 0; } }
-.fd-play .fd-sel-new { animation: fd-sel-new 8s linear infinite; }
+.fd .fd-sel-new { animation: fd-sel-new 8s linear infinite; }
 @keyframes fd-sel-new { 0%, 65.9% { opacity: 0; } 66%, 100% { opacity: 1; } }
 
-.fd-play .fd-ans { animation: fd-ans 8s infinite; }
+.fd .fd-ans { animation: fd-ans 8s infinite; }
 @keyframes fd-ans { 0%, 64% { opacity: 0; transform: translateY(8px); } 68%, 100% { opacity: 1; transform: translateY(0); } }
-.fd-play .fd-ans .fd-ty { animation: fd-ans-ty 8s steps(12) infinite; }
+.fd .fd-ans .fd-ty { animation: fd-ans-ty 8s steps(12) infinite; }
 @keyframes fd-ans-ty { 0%, 68% { max-width: 0; } 86%, 100% { max-width: 300px; } }
 
-.fd-play .fd-rp { animation: fd-rip 8s ease-out infinite; }
+.fd .fd-rp { animation: fd-rip 8s ease-out infinite; }
 @keyframes fd-rip { 0% { opacity: 0; transform: scale(0.4); } 0.5% { opacity: 1; transform: scale(0.4); } 6%, 100% { opacity: 0; transform: scale(1.8); } }
-.fd-play .fd-rp-start { animation-delay: 1.28s; }
-.fd-play .fd-rp-stop { animation-delay: 4.32s; }
-.fd-play .fd-rp-c1 { animation-delay: 0.24s; }
-.fd-play .fd-rp-c2 { animation-delay: 0.52s; }
-.fd-play .fd-rp-c3 { animation-delay: 0.8s; }
+.fd .fd-rp-start { animation-delay: 1.28s; }
+.fd .fd-rp-stop { animation-delay: 4.32s; }
 
-.fd-play .fd-orb { animation: fd-orb-rec 8s infinite; }
+.fd .fd-orb { animation: fd-orb-rec 8s infinite; }
 @keyframes fd-orb-rec { 0%, 16% { background: var(--color-surface-strong); border-color: var(--color-line-strong); } 18%, 55% { background: var(--color-accent-control); border-color: var(--color-accent-control); } 57%, 100% { background: var(--color-surface-strong); border-color: var(--color-line-strong); } }
-.fd-play .fd-orb-wave { animation: fd-on-rec 8s infinite; }
+.fd .fd-orb-wave { animation: fd-on-rec 8s infinite; }
 @keyframes fd-on-rec { 0%, 16% { opacity: 0; } 18%, 55% { opacity: 1; } 57%, 100% { opacity: 0; } }
-.fd-play .fd-orb-mic { animation: fd-off-rec 8s infinite; }
+.fd .fd-orb-mic { animation: fd-off-rec 8s infinite; }
 @keyframes fd-off-rec { 0%, 16% { opacity: 1; } 18%, 55% { opacity: 0; } 57%, 100% { opacity: 1; } }
 
-.fd-play.fd-orb-click .fd-cur { animation: fd-cur-orb 8s ease-in-out infinite; }
+.fd.fd-orb-click .fd-cur { animation: fd-cur-orb 8s ease-in-out infinite; }
 @keyframes fd-cur-orb { 0% { transform: translate(-180px, -60px); } 14%, 100% { transform: translate(0, 0); } }
 
-.fd-play.fd-shake .fd-cur { animation: fd-cur-shake-move 8s ease-in-out infinite; }
-.fd-play.fd-shakeDirect .fd-cur { animation: fd-cur-shake 8s ease-in-out infinite; }
+.fd.fd-shake .fd-cur { animation: fd-cur-shake-move 8s ease-in-out infinite; }
+.fd.fd-shakeDirect .fd-cur { animation: fd-cur-shake 8s ease-in-out infinite; }
 @keyframes fd-cur-shake { 0%, 10%, 100% { transform: translate(0, 0); } 2.5%, 7.5% { transform: translate(-22px, 0); } 5% { transform: translate(22px, 0); } }
 @keyframes fd-cur-shake-move { 0%, 10%, 12% { transform: translate(0, 0); } 2.5%, 7.5% { transform: translate(-22px, 0); } 5% { transform: translate(22px, 0); } 15%, 100% { transform: translate(54px, 4px); } }
-.fd-play .fd-trail { animation: fd-trail 8s infinite; }
+.fd .fd-trail { animation: fd-trail 8s infinite; }
 @keyframes fd-trail { 0%, 1% { opacity: 0; } 2%, 9% { opacity: 0.8; } 11%, 100% { opacity: 0; } }
-.fd-play.fd-shake .fd-orb { animation: fd-orb-pop 8s infinite, fd-orb-rec 8s infinite; }
+.fd.fd-shake .fd-orb { animation: fd-orb-pop 8s infinite, fd-orb-rec 8s infinite; }
 @keyframes fd-orb-pop { 0%, 10% { transform: scale(0); opacity: 0; } 12.5% { transform: scale(1.12); opacity: 1; } 14%, 100% { transform: scale(1); opacity: 1; } }
 
-.fd-play .fd-badge { animation: fd-badge 8s infinite; }
-@keyframes fd-badge { 0%, 10% { opacity: 0; transform: scale(0.6); } 12%, 17% { opacity: 1; transform: scale(1); } 20%, 100% { opacity: 0; } }
-
 @media (prefers-reduced-motion: reduce) {
-  .fd-play, .fd-play * { animation: none !important; }
+  .fd, .fd * { animation: none !important; }
 }

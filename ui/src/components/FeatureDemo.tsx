@@ -1,8 +1,7 @@
-import { useState } from "react";
 import { cn } from "@/lib/cn";
 import "./FeatureDemo.css";
 
-export type FeatureDemoKind = "translate" | "edit" | "ask" | "orb" | "shake" | "shakeDirect" | "clicks";
+export type FeatureDemoKind = "translate" | "edit" | "ask" | "orb" | "shake" | "shakeDirect";
 
 /** 波形条高度：左侧几根渐隐，与原生胶囊一致。 */
 const WAVE = [6, 10, 14, 8, 18, 12, 22, 16, 10, 20, 12, 8, 4];
@@ -11,48 +10,36 @@ const ORB_WAVE = [6, 12, 16, 10, 5];
 
 const MIC_PATH = ["M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z", "M19 10v2a7 7 0 0 1-14 0v-2", "M12 19v3"];
 
-function stepsOf(kind: FeatureDemoKind, keyLabel: string, hold: boolean, clickCount: number): [string, string, string] {
+function stepsOf(kind: FeatureDemoKind, keyLabel: string, hold: boolean): [string, string, string] {
   const press = `${hold ? "按住" : "按"} ${keyLabel}`;
   switch (kind) {
-    case "translate": return [press, "说话", "译文出现在光标处"];
+    case "translate": return [press, "说话", "译文出现在输入框"];
     case "edit": return [`选中文字，${press}`, "说出修改要求", "原文被替换"];
     case "ask": return [press, "说出问题", "回答浮在旁边"];
-    case "orb": return ["点悬浮球", "说话，再点一下", "文字上屏"];
-    case "shake": return ["晃动鼠标，点出现的悬浮球", "说话，再点一下", "文字上屏"];
-    case "shakeDirect": return ["晃动鼠标", "说话", "文字上屏"];
-    case "clicks": return [`左键快速连击 ${clickCount} 次`, "说话", "文字上屏"];
+    case "orb": return ["点悬浮球", "说话，再点一下", "文字出现在输入框"];
+    case "shake": return ["晃动鼠标，点出现的悬浮球", "说话，再点一下", "文字出现在输入框"];
+    case "shakeDirect": return ["晃动鼠标", "说话", "文字出现在输入框"];
   }
 }
 
 /**
- * 功能示意：用一小段动画说明「怎么触发 → 说什么 → 结果出现在哪」。
- * 平时静止，鼠标停在示意上或 play 为真时循环播放；系统要求减少动态效果时不播放。
+ * 功能示意：用一小段循环动画说明「怎么触发 → 说什么 → 结果出现在哪」。
+ * 系统要求减少动态效果时停在代表帧。
  */
 export function FeatureDemo({
   kind,
-  play = false,
   keyLabel = "快捷键",
   hold = false,
-  clickCount = 3,
 }: {
   kind: FeatureDemoKind;
-  play?: boolean;
   keyLabel?: string;
   hold?: boolean;
-  clickCount?: number;
 }) {
-  const [hover, setHover] = useState(false);
-  const steps = stepsOf(kind, keyLabel, hold, clickCount);
+  const steps = stepsOf(kind, keyLabel, hold);
   return (
-    <div
-      role="img"
-      aria-label={steps.join("，")}
-      className={cn("fd", `fd-${kind === "orb" ? "orb-click" : kind}`, hold && "fd-hold", (play || hover) && "fd-play")}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-    >
+    <div role="img" aria-label={steps.join("，")} className={cn("fd", `fd-${kind === "orb" ? "orb-click" : kind}`, hold && "fd-hold")}>
       <div className="fd-scene" aria-hidden>
-        <Scene kind={kind} keyLabel={keyLabel} clickCount={clickCount} />
+        <Scene kind={kind} keyLabel={keyLabel} />
       </div>
       <div className="fd-steps" aria-hidden>
         {steps.map((step, index) => <span key={index} className={`fd-s${index + 1}`}><b>{index + 1}</b>{step}</span>)}
@@ -61,37 +48,36 @@ export function FeatureDemo({
   );
 }
 
-function Scene({ kind, keyLabel, clickCount }: { kind: FeatureDemoKind; keyLabel: string; clickCount: number }) {
+function Scene({ kind, keyLabel }: { kind: FeatureDemoKind; keyLabel: string }) {
   switch (kind) {
     case "translate":
       return <>
-        <Win><div className="fd-ph" style={{ width: 140 }} /><Output text="I'll send you the proposal tomorrow afternoon." /></Win>
+        <InputBox><Output text="I'll send you the proposal tomorrow afternoon." /></InputBox>
         <div className="fd-key">{keyLabel}</div>
         <Capsule say="明天下午把方案发你" />
       </>;
     case "edit":
       return <>
-        <Win>
-          <div className="fd-ph" style={{ width: 260 }} />
-          <div className="fd-txt"><span className="fd-sel"><span className="fd-sel-bg" /><span className="fd-sel-old">这个方案我觉得还行吧，你看看</span><span className="fd-sel-new">该方案整体可行，请您审阅。</span></span></div>
-        </Win>
+        <InputBox>
+          <span className="fd-sel"><span className="fd-sel-bg" /><span className="fd-sel-old">这个方案我觉得还行吧，你看看</span><span className="fd-sel-new">该方案整体可行，请您审阅。</span></span>
+        </InputBox>
         <div className="fd-key">{keyLabel}</div>
         <Capsule say="改得正式一点" />
       </>;
     case "ask":
       return <>
-        <Win width={240}>
+        <div className="fd-doc">
           <div className="fd-ph" style={{ width: 150 }} />
           <div className="fd-ph" style={{ width: 170, marginLeft: 16 }} />
           <div className="fd-ph" style={{ width: 90, marginLeft: 16 }} />
-        </Win>
+        </div>
         <div className="fd-ans"><div className="fd-ans-label">回答</div><div className="fd-txt"><span className="fd-ty">按行读取配置，跳过空行。</span></div></div>
         <div className="fd-key">{keyLabel}</div>
         <Capsule say="这段代码在做什么？" />
       </>;
     case "orb":
       return <>
-        <Win><div className="fd-ph" style={{ width: 140 }} /><Output text="下午三点开会，记得带周报" /></Win>
+        <InputBox><Output text="下午三点开会，记得带周报" /></InputBox>
         <Orb x={356} y={104} />
         <div className="fd-rp fd-rp-start" style={{ left: 376, top: 124 }} />
         <div className="fd-rp fd-rp-stop" style={{ left: 376, top: 124 }} />
@@ -99,7 +85,7 @@ function Scene({ kind, keyLabel, clickCount }: { kind: FeatureDemoKind; keyLabel
       </>;
     case "shake":
       return <>
-        <Win><div className="fd-ph" style={{ width: 140 }} /><Output text="下午三点开会，记得带周报" /></Win>
+        <InputBox><Output text="下午三点开会，记得带周报" /></InputBox>
         <Orb x={236} y={92} />
         <div className="fd-trail" style={{ left: 172, top: 118 }} />
         <div className="fd-trail" style={{ left: 224, top: 118 }} />
@@ -109,31 +95,29 @@ function Scene({ kind, keyLabel, clickCount }: { kind: FeatureDemoKind; keyLabel
       </>;
     case "shakeDirect":
       return <>
-        <Win><div className="fd-ph" style={{ width: 140 }} /><Output text="下午三点开会，记得带周报" /></Win>
-        <div className="fd-trail" style={{ left: 316, top: 40 }} />
-        <div className="fd-trail" style={{ left: 368, top: 40 }} />
-        <Cursor x={344} y={32} />
+        <InputBox><Output text="下午三点开会，记得带周报" /></InputBox>
+        <div className="fd-trail" style={{ left: 336, top: 104 }} />
+        <div className="fd-trail" style={{ left: 388, top: 104 }} />
+        <Cursor x={364} y={96} />
         <Capsule say="下午三点开会，记得带周报" />
-      </>;
-    case "clicks":
-      return <>
-        <Win><div className="fd-ph" style={{ width: 140 }} /><Output text="好的，我马上处理" /></Win>
-        <div className="fd-rp fd-rp-c1" style={{ left: 360, top: 40 }} />
-        <div className="fd-rp fd-rp-c2" style={{ left: 360, top: 40 }} />
-        <div className="fd-rp fd-rp-c3" style={{ left: 360, top: 40 }} />
-        <div className="fd-badge" style={{ left: 378, top: 14 }}>×{clickCount}</div>
-        <Cursor x={360} y={40} />
-        <Capsule say="好的，我马上处理" />
       </>;
   }
 }
 
-function Win({ width = 400, children }: { width?: number; children: React.ReactNode }) {
-  return <div className="fd-win" style={{ width }}>{children}</div>;
+/** 单行输入框，右侧是发送按钮；有文字时按钮亮起。 */
+function InputBox({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="fd-input">
+      <div className="fd-txt">{children}</div>
+      <span className="fd-send">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5" /><path d="m6 11 6-6 6 6" /></svg>
+      </span>
+    </div>
+  );
 }
 
 function Output({ text }: { text: string }) {
-  return <div className="fd-txt"><span className="fd-ty fd-out">{text}</span><span className="fd-caret" /></div>;
+  return <><span className="fd-out">{text}</span><span className="fd-caret" /></>;
 }
 
 /** 听写胶囊与上方的实时文字。 */
