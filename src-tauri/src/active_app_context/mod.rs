@@ -11,6 +11,8 @@ mod model;
 mod native_probe;
 #[cfg(windows)]
 pub(crate) mod pointer_probe;
+#[cfg(windows)]
+mod uia_point;
 mod normalize;
 #[cfg(windows)]
 mod ocr;

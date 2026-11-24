@@ -273,9 +273,8 @@ pub(crate) fn pointed_block(blocks: &[OcrTextBlock], at: (f32, f32), size: (f32,
 }
 
 /// 行里横向位置 `ratio`（0～1）处的那一小段。按字宽估计位置：汉字等全角字按两个半角宽算。
-fn phrase_at(line: &str, ratio: f32) -> Option<String> {
-    let chars: Vec<char> = line.chars().collect();
-    let widths: Vec<f32> = chars.iter().map(|c| if c.is_ascii() { 1.0 } else { 2.0 }).collect();
+pub(crate) fn phrase_at(line: &str, ratio: f32) -> Option<String> {
+    let widths: Vec<f32> = line.chars().map(|c| if c.is_ascii() { 1.0 } else { 2.0 }).collect();
     let target = widths.iter().sum::<f32>() * ratio;
     let mut covered = 0.0;
     let center = widths
@@ -284,7 +283,14 @@ fn phrase_at(line: &str, ratio: f32) -> Option<String> {
             covered += width;
             covered > target
         })
-        .unwrap_or(chars.len().saturating_sub(1));
+        .unwrap_or(widths.len().saturating_sub(1));
+    phrase_around(line, center)
+}
+
+/// 行里第 `center` 个字所在的那一小段：两边到标点为止，没有标点时左右各取约 10 个字。
+pub(crate) fn phrase_around(line: &str, center: usize) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let center = center.min(chars.len().checked_sub(1)?);
     let is_break = |index: usize| PHRASE_BREAKS.contains(chars[index]);
     // 光标正好落在标点上时，取它左边那一段。
     let center = (0..=center).rev().find(|&index| !is_break(index))?;
@@ -440,6 +446,11 @@ mod tests {
         assert_eq!(phrase_at(&"字".repeat(40), 0.5).map(|text| text.chars().count()), Some(PHRASE_HALF_CHARS * 2 + 1));
         // 光标落在标点上取它左边那段。
         assert_eq!(phrase_at("甲乙，丙丁", 0.5).as_deref(), Some("甲乙"));
+        // 按坐标取到整行时直接给出光标是第几个字。
+        let line = "核实:segment-map 免费，segment-edit 每张";
+        let at = line.chars().position(|c| c == '每').unwrap();
+        assert_eq!(phrase_around(line, at).as_deref(), Some("segment-edit 每张"));
+        assert_eq!(phrase_around("", 0), None);
         // 英文不断在单词中间。
         let phrase = phrase_at("The quick brown fox jumps over the lazy dog near the riverbank today", 0.5).unwrap();
         let words: Vec<&str> = "The quick brown fox jumps over the lazy dog near the riverbank today".split(' ').collect();

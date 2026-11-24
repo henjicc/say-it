@@ -14,19 +14,26 @@ interface ElementInfo {
   rect: [number, number, number, number];
 }
 
+type PointSource = "text" | "control" | "ocr";
+
 interface Pointing {
   tMs: number;
   x: number;
   y: number;
+  result: string | null;
+  source: PointSource | null;
+  resultMs: number;
   ocrText: string | null;
   ocrMs: number;
+  line: { line: string; offset: number; source: ElementInfo } | null;
+  lineError?: string;
   element: ElementInfo | null;
   region: { element: ElementInfo; coverage: number } | null;
   trailRect: [number, number, number, number] | null;
   samplesUsed: number;
-  textAt: { word: string; line: string; paragraph: string; ms: number } | null;
-  textError?: string;
 }
+
+const SOURCE_LABELS: Record<PointSource, string> = { text: "按坐标取行", control: "控件名称", ocr: "截图识别" };
 
 interface ProbeState {
   status: "idle" | "waiting" | "running" | "done" | "failed";
@@ -96,7 +103,7 @@ export function PointerProbePanel() {
         </Row>
         <Row
           label="指向测试"
-          hint="点开始后有 3 秒切到别的软件。之后在要测的地方停住鼠标、绕圈或来回晃，每认出一次指向，就把截图取词、按坐标取词、光标下的控件和晃动覆盖的区域记成一条。"
+          hint="点开始后有 3 秒切到别的软件。之后在要测的地方停住鼠标、绕圈或来回晃，每认出一次指向，就把动态上下文实际取到的文字（注明来自按坐标取行、控件名称还是截图识别）、只用截图识别的结果、光标所在的整行、光标下的控件和晃动覆盖的区域记成一条。"
           message={(status || message) && (
             <span role={state.status === "failed" || message ? "alert" : "status"} className={state.status === "failed" || message ? "text-[var(--color-err)]" : undefined}>
               {message || status}
@@ -111,10 +118,15 @@ export function PointerProbePanel() {
 
       {report?.pointings.map((pointing, index) => (
         <Group key={`${pointing.tMs}-${index}`} title={`第 ${index + 1} 次 · ${(pointing.tMs / 1000).toFixed(1)} 秒`}>
-          <Row label="截图取词"><span className="truncate text-right" title={pointing.ocrText ?? ""}>{pointing.ocrText ?? "没取到"}（{pointing.ocrMs} ms）</span></Row>
-          <Row label="按坐标取词">
-            <span className="truncate text-right" title={pointing.textAt ? `行：${pointing.textAt.line}\n段：${pointing.textAt.paragraph}` : pointing.textError ?? ""}>
-              {pointing.textAt ? `${pointing.textAt.word || "（空）"} ｜ ${pointing.textAt.line || "（空）"}（${pointing.textAt.ms} ms）` : `取不到：${pointing.textError ?? ""}`}
+          <Row label="实际取到">
+            <span className="truncate text-right" title={pointing.result ?? ""}>
+              {pointing.result ? `${pointing.result}（${pointing.source ? SOURCE_LABELS[pointing.source] : ""}，${pointing.resultMs} ms）` : `没取到（${pointing.resultMs} ms）`}
+            </span>
+          </Row>
+          <Row label="只用截图识别"><span className="truncate text-right" title={pointing.ocrText ?? ""}>{pointing.ocrText ?? "没取到"}（{pointing.ocrMs} ms）</span></Row>
+          <Row label="光标所在的整行">
+            <span className="truncate text-right" title={pointing.line?.line ?? pointing.lineError ?? ""}>
+              {pointing.line ? `第 ${pointing.line.offset + 1} 个字 ｜ ${pointing.line.line}` : `取不到：${pointing.lineError ?? ""}`}
             </span>
           </Row>
           <Row label="光标下的控件"><span className="truncate text-right" title={describe(pointing.element)}>{describe(pointing.element)}</span></Row>

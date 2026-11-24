@@ -19,6 +19,7 @@ use super::dynamic::{
 use super::model::{
     ActivationTarget, ActiveAppContextExtractionMethod, CaptureOptions, CaptureStatus,
 };
+use super::uia_point::PointSource;
 use super::windows::WindowsActiveAppContextProvider;
 use super::{ocr, screen_capture, ActiveAppContextProvider};
 use crate::providers::capabilities::OcrProvider;
@@ -382,19 +383,20 @@ fn read_selection(shared: &Shared, target: ActivationTarget) {
 }
 
 fn read_pointer(shared: &Shared, at_ms: u64, point: (i32, i32)) {
-    if let Some(text) = pointed_text(point, &shared.blocked_apps, shared.method, &shared.closed) {
+    if let Some((text, source)) = pointed_text(point, &shared.blocked_apps, shared.method, &shared.closed) {
+        crate::development_debug_log("dynamic-context", format_args!("鼠标指向（{source:?}）：{text}"));
         shared.record_new(at_ms, DynamicKind::Pointer { text });
     }
 }
 
-/// 截取光标周围一块区域识别文字，取光标所在那一小段。区域限制在光标所在的窗口里，
-/// 不截到旁边的窗口；那个窗口在黑名单里、或焦点在密码框时不截。
+/// 光标指着的那一小段文字，依次试：按坐标取整行原文、光标下小控件的名称、截图识别（见
+/// `uia_point::pointed_by_uia`）。光标所在的窗口在黑名单里、或焦点在密码框时什么都不取。
 pub(crate) fn pointed_text(
     (x, y): (i32, i32),
     blocked_apps: &[String],
     method: ActiveAppContextExtractionMethod,
     closed: &Arc<AtomicBool>,
-) -> Option<String> {
+) -> Option<(String, PointSource)> {
     let target = window_at(x, y)?;
     let baseline = super::windows::baseline_context(target, blocked_apps, method);
     if baseline.status == CaptureStatus::Blocked
@@ -403,8 +405,32 @@ pub(crate) fn pointed_text(
     {
         return None;
     }
+    let (found, leaf) = super::uia_point::pointed_by_uia(x, y);
+    if found.is_some() {
+        return found;
+    }
+    ocr_pointed_text(target, (x, y), leaf.map(|leaf| leaf.rect), closed).map(|text| (text, PointSource::Ocr))
+}
+
+/// 截取光标周围一块区域识别文字，取光标所在那一小段。区域限制在光标所在的窗口里，不截到
+/// 旁边的窗口；给了 `within`（光标下的元素）时也不超出它。
+pub(crate) fn ocr_pointed_text(
+    target: ActivationTarget,
+    (x, y): (i32, i32),
+    within: Option<[i32; 4]>,
+    closed: &Arc<AtomicBool>,
+) -> Option<String> {
     let (width, height) = POINTER_REGION;
-    let region = RECT { left: x - width / 2, top: y - height / 2, right: x + width / 2, bottom: y + height / 2 };
+    let mut region = RECT { left: x - width / 2, top: y - height / 2, right: x + width / 2, bottom: y + height / 2 };
+    // 元素太小（只罩住一两个字）时还是截整条，免得认不出字。
+    if let Some([left, top, right, bottom]) = within.filter(|rect| rect[2] - rect[0] >= 40 && rect[3] - rect[1] >= 16) {
+        region = RECT {
+            left: region.left.max(left),
+            top: region.top.max(top),
+            right: region.right.min(right),
+            bottom: region.bottom.min(bottom),
+        };
+    }
     let (image, region) = screen_capture::capture_window_region(target.window_handle, region).ok()?;
     let at = (
         (x - region.left) as f32 / (region.right - region.left) as f32,
@@ -421,7 +447,7 @@ pub(crate) fn pointed_text(
     pointed_block(&output.blocks, at, size)
 }
 
-fn window_at(x: i32, y: i32) -> Option<ActivationTarget> {
+pub(crate) fn window_at(x: i32, y: i32) -> Option<ActivationTarget> {
     let window = unsafe { GetAncestor(WindowFromPoint(POINT { x, y }), GA_ROOT) };
     let process_id = process_of(window);
     (!window.0.is_null() && process_id != 0 && process_id != std::process::id()).then_some(ActivationTarget {
