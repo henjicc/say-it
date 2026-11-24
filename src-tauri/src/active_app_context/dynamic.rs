@@ -249,6 +249,8 @@ const POINTER_LIFT: f32 = 10.0;
 /// 光标所在那一小段两边没有标点时，最多取光标左右各这么多字。
 const PHRASE_HALF_CHARS: usize = 10;
 const WORD_EXTEND_CHARS: usize = 20;
+/// 指向取到的一小段至少要有这么多有效字符（字母、数字、汉字），一个字说明不了指的是什么。
+const MIN_PHRASE_CHARS: usize = 2;
 /// 一小段的分界：标点。英文单词之间的空格不算，「segment-map 免费」要整段取。
 const PHRASE_BREAKS: &str = "，,。；;：:、！!？?（）()【】[]「」“”\"|";
 
@@ -318,8 +320,9 @@ pub(crate) fn phrase_around(line: &str, center: usize) -> Option<String> {
         .take_while(|&index| in_word(index) && in_word(index - 1))
         .last()
         .unwrap_or(end);
-    let phrase: String = chars[start..=end].iter().collect::<String>().trim().to_string();
-    (!phrase.is_empty()).then_some(phrase)
+    // 网页里嵌入的图片、控件在文字里是占位符 U+FFFC，去掉；剩下不到两个有效字符的不算取到。
+    let phrase: String = chars[start..=end].iter().filter(|c| **c != '\u{FFFC}').collect::<String>().trim().to_string();
+    (meaningful_chars(&phrase) >= MIN_PHRASE_CHARS).then_some(phrase)
 }
 
 /// 缩略图（灰度）里明显变了的像素占比超过这个值才算窗口内容变了：输入框里多几个字、
@@ -423,8 +426,8 @@ mod tests {
         // 截图被窗口边缘裁过时光标不在正中。
         assert_eq!(pointed_block(&blocks, (0.1, 0.5), size).as_deref(), Some("左边的按钮"));
         // 光标落在两段之间时取近的；都太远时不算指着。
-        assert_eq!(pointed_block(&[block("近", 0.52, 0.4, 0.6, 0.6), block("远", 0.0, 0.0, 0.1, 0.1)], (0.5, 0.5), size).as_deref(), Some("近"));
-        assert_eq!(pointed_block(&[block("远", 0.0, 0.0, 0.1, 0.1)], (0.5, 0.5), size), None);
+        assert_eq!(pointed_block(&[block("近处", 0.52, 0.4, 0.6, 0.6), block("远处", 0.0, 0.0, 0.1, 0.1)], (0.5, 0.5), size).as_deref(), Some("近处"));
+        assert_eq!(pointed_block(&[block("远处", 0.0, 0.0, 0.1, 0.1)], (0.5, 0.5), size), None);
     }
 
     #[test]
@@ -451,6 +454,10 @@ mod tests {
         let at = line.chars().position(|c| c == '每').unwrap();
         assert_eq!(phrase_around(line, at).as_deref(), Some("segment-edit 每张"));
         assert_eq!(phrase_around("", 0), None);
+        // 只取到嵌入对象的占位符或一个字时不算取到。
+        assert_eq!(phrase_around("\u{FFFC}", 0), None);
+        assert_eq!(phrase_around("移", 0), None);
+        assert_eq!(phrase_around("\u{FFFC}提示词", 1).as_deref(), Some("提示词"));
         // 英文不断在单词中间。
         let phrase = phrase_at("The quick brown fox jumps over the lazy dog near the riverbank today", 0.5).unwrap();
         let words: Vec<&str> = "The quick brown fox jumps over the lazy dog near the riverbank today".split(' ').collect();
