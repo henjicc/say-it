@@ -96,15 +96,16 @@
 @keyframes fd-bub { 0%, 19% { opacity: 0; transform: translateY(6px); } 22%, 54% { opacity: 1; transform: translateY(0); } 57%, 100% { opacity: 0; } }
 .fd-play .fd-bub .fd-ty { animation: fd-say 8s steps(12) infinite; }
 @keyframes fd-say { 0%, 22% { max-width: 0; } 50%, 100% { max-width: 180px; } }
-.fd-play .fd-out { animation: fd-out 8s steps(20) infinite; }
-@keyframes fd-out { 0%, 66% { max-width: 0; } 86%, 100% { max-width: 420px; } }
+/* 结果整段粘贴进输入框：一次出现，不逐字打出 */
+.fd-play .fd-out { animation: fd-out 8s linear infinite; }
+@keyframes fd-out { 0%, 65.9% { opacity: 0; } 66%, 100% { opacity: 1; } }
 
 .fd-play .fd-sel-bg { animation: fd-sel-bg 8s infinite; }
-@keyframes fd-sel-bg { 0%, 2% { width: 0; opacity: 1; } 9%, 64% { width: 100%; opacity: 1; } 70%, 100% { width: 100%; opacity: 0; } }
-.fd-play .fd-sel-old { animation: fd-sel-old 8s infinite; }
-@keyframes fd-sel-old { 0%, 64% { opacity: 1; } 67%, 100% { opacity: 0; } }
-.fd-play .fd-sel-new { animation: fd-sel-new 8s infinite; }
-@keyframes fd-sel-new { 0%, 66% { opacity: 0; transform: translateY(4px); } 72%, 100% { opacity: 1; transform: translateY(0); } }
+@keyframes fd-sel-bg { 0%, 2% { width: 0; opacity: 1; } 9%, 65.9% { width: 100%; opacity: 1; } 66%, 100% { width: 100%; opacity: 0; } }
+.fd-play .fd-sel-old { animation: fd-sel-old 8s linear infinite; }
+@keyframes fd-sel-old { 0%, 65.9% { opacity: 1; } 66%, 100% { opacity: 0; } }
+.fd-play .fd-sel-new { animation: fd-sel-new 8s linear infinite; }
+@keyframes fd-sel-new { 0%, 65.9% { opacity: 0; } 66%, 100% { opacity: 1; } }
 
 .fd-play .fd-ans { animation: fd-ans 8s infinite; }
 @keyframes fd-ans { 0%, 64% { opacity: 0; transform: translateY(8px); } 68%, 100% { opacity: 1; transform: translateY(0); } }
