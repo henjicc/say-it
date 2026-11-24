@@ -2,7 +2,7 @@ import { useUiStore } from "@/store/useUiStore";
 import { cn } from "@/lib/cn";
 import { useDeveloperStore } from "@/store/useDeveloperStore";
 import { WindowDragStrip } from "@/components/layout/WindowDragStrip";
-import { proNavGroups, SETTINGS_NAV, type NavItem } from "./navConfig";
+import { PRO_BOTTOM_NAV, proNavGroups, type NavItem } from "./navConfig";
 
 function RailButton({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {
   return (
@@ -42,7 +42,9 @@ export function Sidebar() {
         </div>
       ))}
       <div className="flex-1" />
-      <RailButton item={SETTINGS_NAV} active={view === "settings"} onClick={() => setView("settings")} />
+      {PRO_BOTTOM_NAV.map((item) => (
+        <RailButton key={item.view} item={item} active={view === item.view} onClick={() => setView(item.view)} />
+      ))}
     </nav>
   );
 }
