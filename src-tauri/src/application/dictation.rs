@@ -3266,9 +3266,14 @@ async fn finalize(app: AppHandle, epoch: u64) {
             None => Err("语音输入开始时的目标窗口已丢失".into()),
         }
     };
+    // 结果本该直接上屏（听写、翻译输入、可编辑选区的改写）却注入不了时，留在剪贴板并提示粘贴；
+    // 要在回答窗里看的结果交给回答窗显示错误。
+    let delivers_into_input = assistant_processed
+        .as_ref()
+        .is_none_or(|assistant| !assistant.show_answer);
     let delivery_outcome = match injection_result {
         Ok(()) => DeliveryOutcome::Injected,
-        Err(delivery_error) if assistant_request.is_none() && !processed.is_empty() => {
+        Err(delivery_error) if delivers_into_input && !processed.is_empty() => {
             clipboard_delivery_outcome(
                 delivery_error,
                 write_clipboard_text_inner(processed.clone()).await,
@@ -3499,7 +3504,7 @@ async fn finalize(app: AppHandle, epoch: u64) {
             crate::desktop::complete_floating_orb(
                 app.clone(),
                 "fallback",
-                "已复制，请手动粘贴".to_string(),
+                "已复制，请粘贴".to_string(),
                 CLIPBOARD_FALLBACK_NOTICE_MS,
             );
         } else {
@@ -4660,8 +4665,8 @@ mod tests {
             "未识别到内容"
         );
         assert_eq!(
-            floating_failure_details("fallback", "已复制，请手动粘贴".into(), "注入失败"),
-            "已复制，请手动粘贴"
+            floating_failure_details("fallback", "已复制，请粘贴".into(), "注入失败"),
+            "已复制，请粘贴"
         );
     }
 

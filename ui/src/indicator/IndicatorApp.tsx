@@ -39,7 +39,7 @@ const LABELS: Record<Exclude<Phase, "hidden">, string> = {
   recording: "聆听中…",
   processing: "识别中…",
   smartProcessing: "处理中…",
-  fallback: "已复制，请粘贴使用",
+  fallback: "已复制，请粘贴",
   subtitle: "实时字幕",
   error: "处理失败",
 };
@@ -474,7 +474,7 @@ export function IndicatorApp() {
       {mode === "dictation" && phase === "fallback" && (
         <div id="fallback-panel" role="status" aria-live="polite">
           <ClipboardCheck aria-hidden="true" />
-          <span>已复制，请手动粘贴</span>
+          <span>已复制，请粘贴</span>
         </div>
       )}
       {pillPhase !== "subtitle" && pillPhase !== "fallback" && (

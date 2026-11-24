@@ -46,7 +46,7 @@ const NOTICE_PAD_Y: f32 = 8.0;
 const NOTICE_ICON: f32 = 16.0;
 const NOTICE_ICON_GAP: f32 = 8.0;
 const NOTICE_TEXT_SIZE: f32 = 13.0;
-const FALLBACK_TEXT: &str = "已复制，请手动粘贴";
+const FALLBACK_TEXT: &str = "已复制，请粘贴";
 
 /// 滚动波形：每根柱是一小段时间的音量，新柱从右侧进入、整体连续左移。
 const WAVE_BARS: usize = 14;
@@ -1506,7 +1506,7 @@ mod tests {
         let later = now + Duration::from_secs(1);
         model.apply(Command::SetState(IndicatorState::Fallback), &cx(later, &text));
         let target = model.notice_size.0;
-        assert!(target > pill_w + 20.0);
+        assert!(target > pill_w);
         assert!(<Indicator as OverlayModel<FakeText>>::wants_frames(&model, later));
         model.on_frame(0.016, &cx(later + Duration::from_millis(16), &text));
         let mid = model.pill_rect().width();

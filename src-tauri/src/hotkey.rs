@@ -373,6 +373,15 @@ unsafe fn tap_key(vk: u16) {
     SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
 }
 
+/// 未分配的虚拟键，前台程序收到也不会做任何事。
+const VK_MASK: u16 = 0xE8;
+
+/// 系统热键会吞掉主键，前台程序只看到 Alt 或 Win 被单独按下又松开：Alt 会打开菜单栏，
+/// 随后模拟的粘贴键被菜单吃掉。在修饰键还按着时补一个无意义的按键，松开就不再算单独按下。
+pub(crate) fn mask_modifier_release() {
+    unsafe { tap_key(VK_MASK) };
+}
+
 /// 如果锁定键当前是开启状态，强制关掉。
 fn force_lock_off(vk: u16) {
     if lock_is_on(vk) {

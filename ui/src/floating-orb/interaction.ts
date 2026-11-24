@@ -150,7 +150,7 @@ export function floatingOrbLabel(
     processing: "识别中…",
     smartProcessing: "处理中…",
     success: "已完成并复制",
-    fallback: "已复制，请手动粘贴",
+    fallback: "已复制，请粘贴",
     error: "语音输入失败",
     cancelled: "已取消",
     submitting: "正在发送回车…",

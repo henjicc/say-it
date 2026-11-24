@@ -117,7 +117,7 @@ describe("dictation indicator presentation", () => {
     act(() => eventHandlers.get(EVT.indicatorState)?.({ state: "fallback" }));
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "已复制，请手动粘贴",
+      "已复制，请粘贴",
     );
     expect(view.container.querySelector("#error-panel")).not.toBeInTheDocument();
     expect(view.container.querySelector("#pill")).not.toBeInTheDocument();

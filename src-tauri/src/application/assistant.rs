@@ -188,7 +188,8 @@ fn set_shortcuts_inner(
     // 解析到第二、三条才失败时，前面已经注册进 OS 的组合既不会被注销、也不会进
     // 应用侧的表——旧键从此变成幽灵热键在全局误触发，而任何后续保存都会在重新
     // 注册该组合时拿到 AlreadyRegistered，助手快捷键设置被永久锁死，只能重启。
-    let mut planned: Vec<(AssistantAction, String, crate::state::ShortcutTriggerMode)> = Vec::new();
+    let mut planned: Vec<(AssistantAction, String, crate::state::ShortcutTriggerMode, bool)> =
+        Vec::new();
     #[cfg(target_os = "macos")]
     let mut fn_binding = None;
     for action in [
@@ -214,7 +215,8 @@ fn set_shortcuts_inner(
         let Some(shortcut) = accelerator(settings.get(action))? else {
             continue;
         };
-        planned.push((action, shortcut, settings.get(action).trigger_mode));
+        let binding = settings.get(action);
+        planned.push((action, shortcut, binding.trigger_mode, binding.alt || binding.meta));
     }
 
     // 第二步：解析全部成功后，才注销旧键并注册新键。
@@ -226,14 +228,20 @@ fn set_shortcuts_inner(
     crate::hotkey::set_assistant_fn_binding(None)?;
 
     let mut guard = RegistrationGuard::new(app);
-    for (action, shortcut, trigger_mode) in planned {
+    for (action, shortcut, trigger_mode, masks_modifier) in planned {
         let callback_action = action;
         let pressed = Arc::new(AtomicBool::new(false));
+        #[cfg(not(windows))]
+        let _ = masks_modifier;
         app.global_shortcut()
             .on_shortcut(shortcut.as_str(), move |app, _, event| match event.state {
                 ShortcutState::Pressed => {
                     if pressed.swap(true, Ordering::SeqCst) {
                         return;
+                    }
+                    #[cfg(windows)]
+                    if masks_modifier {
+                        crate::hotkey::mask_modifier_release();
                     }
                     // 必须在全局快捷键回调内同步冻结前台窗口。回调返回后 macOS
                     // 可能把本应用短暂视为活跃进程，异步任务再查询就会丢失原选区。

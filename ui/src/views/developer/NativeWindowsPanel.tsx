@@ -14,7 +14,7 @@ const WINDOWS: { key: string; label: string; hint: string; scenes: [string, stri
       ["recording", "录音"],
       ["processing", "处理中"],
       ["smartProcessing", "智能处理"],
-      ["fallback", "已复制，请手动粘贴"],
+      ["fallback", "已复制，请粘贴"],
       ["notice", "通知"],
     ],
   },
