@@ -8,8 +8,8 @@ const WAVE = [6, 10, 14, 8, 18, 12, 22, 16, 10, 20, 12, 8, 4];
 const WAVE_FADE = [0.35, 0.48, 0.61, 0.74, 0.87];
 const ORB_WAVE = [6, 12, 16, 10, 5];
 const LOOP_S = 8;
-/** 只有输入框和悬浮球的画面内容少，输入框下移，让整组在示意区里上下居中。 */
-const LOW_INPUT_TOP = 30;
+/** 悬浮球画面：输入框在示意区里上下居中，球放在输入框里文字的后面，和实际用法一致。 */
+const LOW_INPUT_TOP = 58;
 /** 实时文字逐字出现的时段（占一轮的百分比），与 CSS 的说话阶段对齐。 */
 const SAY_SPAN: [number, number] = [22, 46];
 const ANSWER_SPAN: [number, number] = [68, 82];
@@ -112,18 +112,18 @@ function Scene({ kind, keyLabel }: { kind: FeatureDemoKind; keyLabel: string }) 
     case "orb":
       return <>
         <InputBox top={LOW_INPUT_TOP}><Output text="下午三点开会，记得带周报" /></InputBox>
-        <Orb x={230} y={92} />
-        <div className="fd-rp fd-rp-start" style={{ left: 250, top: 112 }} />
-        <div className="fd-rp fd-rp-stop" style={{ left: 250, top: 112 }} />
-        <Cursor x={250} y={112} />
+        <Orb x={230} y={60} />
+        <div className="fd-rp fd-rp-start" style={{ left: 250, top: 80 }} />
+        <div className="fd-rp fd-rp-stop" style={{ left: 250, top: 80 }} />
+        <Cursor x={250} y={80} />
       </>;
     case "shake":
       return <>
         <InputBox top={LOW_INPUT_TOP}><Output text="下午三点开会，记得带周报" /></InputBox>
-        <Orb x={230} y={92} />
-        <div className="fd-rp fd-rp-start" style={{ left: 250, top: 112 }} />
-        <div className="fd-rp fd-rp-stop" style={{ left: 250, top: 112 }} />
-        <Cursor x={250} y={112} className="fd-shake-cur" />
+        <Orb x={230} y={60} />
+        <div className="fd-rp fd-rp-start" style={{ left: 250, top: 80 }} />
+        <div className="fd-rp fd-rp-stop" style={{ left: 250, top: 80 }} />
+        <Cursor x={250} y={80} className="fd-shake-cur" />
       </>;
     case "shakeDirect":
       return <>
