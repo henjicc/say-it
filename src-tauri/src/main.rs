@@ -270,9 +270,9 @@ fn main() {
         std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
     }
 
-    let builder = tauri::Builder::default();
-    #[cfg(not(windows))]
-    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    // Windows 的听写与字幕快捷键走 hotkey.rs 的低级钩子，智能助手快捷键在所有平台都走这个插件。
+    let builder =
+        tauri::Builder::default().plugin(tauri_plugin_global_shortcut::Builder::new().build());
     let autostart = tauri_plugin_autostart::Builder::new().args([AUTOSTART_ARG]);
     // LaunchAgent 的 Label 和 plist 文件名应使用稳定、唯一的反向域名标识，不能跟随
     // 本地化 productName（当前为“说吧！”）变化。
