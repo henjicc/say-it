@@ -10,7 +10,6 @@ export type AssistantActionKey = "translateSpeech" | "editSelection" | "ask";
 export type ModelsSectionKey = "usage" | "local" | "plugins" | "compare" | `provider:${string}`;
 export type LexiconSectionKey = "hotwords" | "context";
 export type SettingsSectionKey = "general" | "audio" | "keys" | "history" | "diagnostics";
-export type SmartTextTabKey = "template" | "context" | "preview";
 
 /** 设置搜索命中：跳到对应页面分区后，按 targetText 定位并短暂高亮。 */
 export interface SearchHit {
@@ -48,8 +47,6 @@ interface UiState {
   goToSearchHit: (hit: SearchHit) => void;
   clearSearchHit: (id: string) => void;
   openSettings: (section?: SettingsSectionKey) => void;
-  smartTextTab: SmartTextTabKey;
-  setSmartTextTab: (tab: SmartTextTabKey) => void;
   aboutOpen: boolean;
   openAbout: () => void;
   closeAbout: () => void;
@@ -83,8 +80,6 @@ export const useUiStore = create<UiState>((set) => ({
       ? { view: "dictation", dictationNode: hit.section as DictationNodeKey, searchHit: hit }
       : { view: "settings", settingsSection: hit.section as SettingsSectionKey, searchHit: hit }),
   clearSearchHit: (id) => set((state) => (state.searchHit?.id === id ? { searchHit: null } : {})),
-  smartTextTab: "template",
-  setSmartTextTab: (smartTextTab) => set({ smartTextTab }),
   aboutOpen: false,
   openAbout: () => set({ aboutOpen: true }),
   closeAbout: () => set({ aboutOpen: false }),

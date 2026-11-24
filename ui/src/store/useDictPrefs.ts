@@ -610,6 +610,8 @@ export interface DictPrefs extends DspParams {
   activeAppContextOcrApprovedProviders: string[];
   /** OCR 是否复用命中软件规则后的智能处理最少文本长度。 */
   activeAppContextBlockedApps: string[];
+  /** 智能处理时读取当前软件的文字作为上下文（含说话时的动态上下文，语音问答也带上）。 */
+  activeAppContextEnabled: boolean;
   /** 按软件覆盖后处理配置；顺序即优先级，取第一条命中的启用规则，没有命中时走全局配置。 */
   appProfiles: AppProfile[];
   /** 指定麦克风设备名；空字符串表示使用系统默认输入设备。语音输入和实时字幕的"麦克风"来源共用这一设置。 */
@@ -653,6 +655,7 @@ function defaults(): DictPrefs {
     activeAppContextOcrModel: defaultOcrModelId,
     activeAppContextOcrApprovedProviders: [],
     activeAppContextBlockedApps: [],
+    activeAppContextEnabled: true,
     appProfiles: [],
     micDeviceId: "",
     dictationSilenceDisconnectEnabled: true,

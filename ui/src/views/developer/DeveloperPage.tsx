@@ -14,6 +14,7 @@ import { LocalComparePanel } from "./LocalComparePanel";
 import { BenchResult, ModelBenchPanel, type BenchRow } from "./ModelBenchPanel";
 import { NativeWindowsPanel } from "./NativeWindowsPanel";
 import { PointerProbePanel } from "./PointerProbePanel";
+import { SmartPreviewPanel } from "./SmartPreviewPanel";
 import { setQueryData, useCachedQuery, type Query } from "@/hooks/useCachedQuery";
 
 const RUNS_REFRESH_MS = 3000;
@@ -379,6 +380,7 @@ function SmartTestPanel({ onFinished }: { onFinished: () => void }) {
 
   return (
     <InspectorBody>
+      <SmartPreviewPanel />
       <Group>
         <Row label="测试内容">
           <Tabs

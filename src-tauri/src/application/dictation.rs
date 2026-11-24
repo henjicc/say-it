@@ -233,6 +233,8 @@ struct DictationPrefs {
     smart_processing_min_chars: u32,
     smart_template_id: String,
     smart_templates: Vec<SmartTemplate>,
+    /// 智能处理时读取当前软件的文字作为上下文（含说话过程中的动态上下文、语音问答带上屏幕内容）。
+    active_app_context_enabled: bool,
     active_app_context_ocr_model: String,
     active_app_context_ocr_approved_providers: Vec<String>,
     active_app_context_blocked_apps: Vec<String>,
@@ -268,6 +270,7 @@ impl Default for DictationPrefs {
             smart_processing_min_chars: 0,
             smart_template_id: String::new(),
             smart_templates: vec![],
+            active_app_context_enabled: true,
             active_app_context_ocr_model: String::new(),
             active_app_context_ocr_approved_providers: vec![],
             active_app_context_blocked_apps: vec![],
@@ -1153,7 +1156,7 @@ async fn start_session(
     let effective_smart_prewarm = effective.smart_processing_enabled && assistant_request.is_none();
     // 软件上下文（截图、OCR）等录音启动之后再开始，见下方 trace.recordingReady 之后。
     // Windows 上语音问答也带上说话时屏幕上的内容和动态上下文，「这里」「这个」才有着落。
-    let needs_context = match &assistant_request {
+    let needs_context = prefs.active_app_context_enabled && match &assistant_request {
         None => {
             effective.smart_processing_enabled
                 && prefs
@@ -5168,7 +5171,7 @@ mod tests {
 
     #[test]
     fn profile_can_override_smart_processing_min_chars() {
-        let mut prefs = prefs_with_profiles(vec![AppProfile {
+        let prefs = prefs_with_profiles(vec![AppProfile {
             matchers: vec!["code.exe".into()],
             smart_processing_enabled: Some(true),
             smart_processing_min_chars: Some(0),
