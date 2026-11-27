@@ -10,12 +10,15 @@
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::Threading::{
+    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
     KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
@@ -40,8 +43,13 @@ const CONTEXT_DEBUG_MODS: u8 = MOD_CTRL | MOD_SHIFT;
 const MAX_DICTATION_BINDINGS: usize = 1 + crate::state::MAX_DICTATION_SHORTCUT_PROFILES;
 /// 远程控制软件（如 UU 远程）同步大小写时会经驱动连发 CapsLock 的按下与抬起，
 /// 不带注入标记、扫描码与真实键盘一致，只有按住时长在 1ms 内；人手按键至少持续数十毫秒。
-/// 快捷键按下后延迟这么久才生效，期间抬起的视为模拟点击：不触发，并把锁定键还给系统。
+/// 快捷键按下后延迟这么久才生效，期间抬起的视为模拟点击：作废触发，不再补发成锁定键切换。
 const MIN_HUMAN_PRESS_MS: u32 = 15;
+/// 本模块自行注入的按键标记（关闭已开启的锁定键、长按模式短按补发、屏蔽修饰键抬起）。
+/// 钩子只放行带此标记的锁定键，外部程序注入的同款锁定键在非长按绑定下会被拦截。
+const INTERNAL_EXTRA_INFO: usize = 0x5341_5949_544B;
+/// `SendInput` 切换锁定键状态异步生效，短时间内不重复关闭同一锁定键，避免再次翻开。
+const FORCE_LOCK_OFF_COOLDOWN: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Debug)]
 pub struct HotkeyBinding {
@@ -69,9 +77,10 @@ static PRESS_STOPS_ACTIVE: [AtomicBool; MAX_DICTATION_BINDINGS] =
 // 每次按下递增；待发出的信号携带按下时的序号，序号变了说明这次按下已作废。
 static PRESS_SEQUENCE: [AtomicU32; MAX_DICTATION_BINDINGS] =
     [const { AtomicU32::new(0) }; MAX_DICTATION_BINDINGS];
-// 按下事件的系统时间戳（KBDLLHOOKSTRUCT.time），抬起时据此判断是否为模拟点击。
+// 按下事件的高精度单调毫秒时间戳，抬起时据此判断是否为模拟点击（避免 GetTickCount 15.6ms 量化误差）。
 static PRESS_DOWN_TIME: [AtomicU32; MAX_DICTATION_BINDINGS] =
     [const { AtomicU32::new(0) }; MAX_DICTATION_BINDINGS];
+static HOOK_CLOCK_START: OnceLock<Instant> = OnceLock::new();
 static HOTKEY_GENERATION: AtomicU32 = AtomicU32::new(0);
 static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
@@ -116,15 +125,32 @@ static BINDING_PROFILE_IDS: OnceLock<RwLock<Vec<Option<String>>>> = OnceLock::ne
 static SUB_TOGGLE_TX: OnceLock<Mutex<Sender<u32>>> = OnceLock::new();
 static CAPTURE_TX: OnceLock<Mutex<Sender<u16>>> = OnceLock::new();
 static CONTEXT_DEBUG_TX: OnceLock<Mutex<Sender<()>>> = OnceLock::new();
+static LOCK_KEY_TX: OnceLock<Mutex<Sender<LockKeyCommand>>> = OnceLock::new();
 static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static ESCAPE_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
 const VK_ESCAPE: u16 = 0x1B;
 
+#[derive(Clone, Copy)]
+enum LockKeyCommand {
+    /// 如果锁定键当前意外处于开启状态，在钩子外异步补一次内部按键将其关闭。
+    ForceOff(u16),
+    /// 长按模式短按放行：在钩子外异步补发一次锁定键切换，避免在低级钩子回调内重入 SendInput。
+    Tap(u16),
+    /// 仅用于钩子外记录被拦截的外部/模拟锁定键事件，避免在低级钩子回调内写日志耗时。
+    LogBlocked(&'static str, u16),
+}
+
+fn hook_now_ms() -> u32 {
+    let start = HOOK_CLOCK_START.get_or_init(Instant::now);
+    start.elapsed().as_millis() as u32
+}
+
 /// 保存 AppHandle 并安装一次键盘钩子（带消息循环的专用线程）。
 pub fn init(app: AppHandle) {
     let _ = APP.set(app);
     let _ = BINDING_PROFILE_IDS.set(RwLock::new(Vec::new()));
+    let _ = HOOK_CLOCK_START.get_or_init(Instant::now);
     if HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -181,8 +207,32 @@ pub fn init(app: AppHandle) {
         }
     });
 
-    // 钩子线程（带消息循环）。
+    let (lock_tx, lock_rx) = channel::<LockKeyCommand>();
+    let _ = LOCK_KEY_TX.set(Mutex::new(lock_tx));
+    std::thread::spawn(move || {
+        let mut last_force_off: Option<(u16, Instant)> = None;
+        while let Ok(command) = lock_rx.recv() {
+            match command {
+                LockKeyCommand::ForceOff(vk) => {
+                    let cooled_down = last_force_off.is_none_or(|(last_vk, at)| {
+                        last_vk != vk || at.elapsed() >= FORCE_LOCK_OFF_COOLDOWN
+                    });
+                    if cooled_down && force_lock_off(vk) {
+                        last_force_off = Some((vk, Instant::now()));
+                    }
+                }
+                LockKeyCommand::Tap(vk) => unsafe { tap_key(vk) },
+                LockKeyCommand::LogBlocked(reason, vk) => {
+                    crate::dlog!("[hotkey] 已拦截锁定键 ({reason}, vk={vk:#04x})");
+                }
+            }
+        }
+    });
+
+    // 钩子线程（带消息循环）。提升线程优先级，避免编译/测试等 CPU 峰值下回调超过
+    // Windows LowLevelHooksTimeout 导致单次按键穿透并意外切换大写锁定。
     std::thread::spawn(|| unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
         let hook = match SetWindowsHookExW(
             WH_KEYBOARD_LL,
             Some(keyboard_hook_proc),
@@ -269,6 +319,23 @@ fn signal_context_debug_capture() {
     }
 }
 
+fn signal_lock_key(command: LockKeyCommand) {
+    if let Some(lock) = LOCK_KEY_TX.get() {
+        if let Ok(tx) = lock.lock() {
+            let _ = tx.send(command);
+        }
+    } else if let LockKeyCommand::ForceOff(vk) = command {
+        #[cfg(not(test))]
+        {
+            force_lock_off(vk);
+        }
+        #[cfg(test)]
+        {
+            let _ = vk;
+        }
+    }
+}
+
 pub fn set_dictation_active(active: bool) {
     DICTATION_ACTIVE.store(active, Ordering::SeqCst);
     if !active {
@@ -310,7 +377,7 @@ pub fn set_hotkeys(bindings: &[HotkeyBinding]) -> Result<(), String> {
         BINDING_PRESS_HOLD[slot].store(binding.press_hold_mode, Ordering::SeqCst);
         TARGET_VKS[slot].store(binding.vk, Ordering::SeqCst);
         if is_lock_key(binding.vk) && !binding.press_hold_mode {
-            force_lock_off(binding.vk);
+            signal_lock_key(LockKeyCommand::ForceOff(binding.vk));
         }
     }
     crate::dlog!(
@@ -327,7 +394,7 @@ pub fn set_subtitle_hotkey(vk: u16, mods: u8) -> Result<(), String> {
     SUB_TRIGGERED.store(false, Ordering::SeqCst);
     SUB_SEQUENCE.fetch_add(1, Ordering::SeqCst);
     if is_lock_key(vk) {
-        force_lock_off(vk);
+        signal_lock_key(LockKeyCommand::ForceOff(vk));
     }
     Ok(())
 }
@@ -350,12 +417,26 @@ fn is_lock_key(vk: u16) -> bool {
     vk == VK_CAPITAL || vk == VK_NUMLOCK || vk == VK_SCROLL
 }
 
+/// 当前锁定键是否已被非长按快捷键（或快捷键录入）接管，需要禁止其切出锁定状态。
+fn has_suppressed_lock_binding(vk: u16) -> bool {
+    if !is_lock_key(vk) {
+        return false;
+    }
+    if CAPTURING.load(Ordering::SeqCst) || SUB_TARGET_VK.load(Ordering::SeqCst) == vk {
+        return true;
+    }
+    (0..MAX_DICTATION_BINDINGS).any(|slot| {
+        TARGET_VKS[slot].load(Ordering::SeqCst) == vk
+            && !BINDING_PRESS_HOLD[slot].load(Ordering::SeqCst)
+    })
+}
+
 /// 锁定键当前是否处于开启（toggle 位）。
 fn lock_is_on(vk: u16) -> bool {
     unsafe { (GetKeyState(vk as i32) & 0x0001) != 0 }
 }
 
-/// 模拟敲一下某键（注入事件带 LLKHF_INJECTED，会被本钩子放行）。
+/// 模拟敲一下某键（带 `INTERNAL_EXTRA_INFO`，会被本钩子识别为内部注入并放行）。
 unsafe fn tap_key(vk: u16) {
     let mk = |flags: KEYBD_EVENT_FLAGS| INPUT {
         r#type: INPUT_KEYBOARD,
@@ -365,7 +446,7 @@ unsafe fn tap_key(vk: u16) {
                 wScan: 0,
                 dwFlags: flags,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: INTERNAL_EXTRA_INFO,
             },
         },
     };
@@ -382,12 +463,14 @@ pub(crate) fn mask_modifier_release() {
     unsafe { tap_key(VK_MASK) };
 }
 
-/// 如果锁定键当前是开启状态，强制关掉。
-fn force_lock_off(vk: u16) {
+/// 如果锁定键当前是开启状态，强制关掉。返回是否实际发出了关闭按键。
+fn force_lock_off(vk: u16) -> bool {
     if lock_is_on(vk) {
         unsafe { tap_key(vk) };
         crate::dlog!("[hotkey] 已强制关闭锁定键 vk={vk:#04x}");
+        return true;
     }
+    false
 }
 
 /// 按住时长短于人手可能达到的下限，说明是程序模拟的点击。`time` 为系统毫秒时间戳，会回绕。
@@ -441,6 +524,7 @@ fn emit_toggle(signal: HotkeySignal, delay_ms: u32) {
     if !press_still_current(signal) {
         return;
     }
+    crate::dlog!("[hotkey] 触发 toggle (slot={})", signal.slot);
     if let (Some(app), Some(profile_id)) = (APP.get(), profile_for_signal(signal)) {
         crate::application::dictation::request_toggle_with_profile(app.clone(), profile_id);
     }
@@ -453,6 +537,7 @@ fn emit_press_start(signal: HotkeySignal, delay_ms: u32) {
         return;
     }
     PRESS_HOLD_STARTED[slot].store(true, Ordering::SeqCst);
+    crate::dlog!("[hotkey] 触发长按开始 (slot={slot})");
     if let (Some(app), Some(profile_id)) = (APP.get(), profile_for_signal(signal)) {
         crate::application::dictation::request_start_with_profile(app.clone(), profile_id);
     }
@@ -461,12 +546,14 @@ fn emit_press_start(signal: HotkeySignal, delay_ms: u32) {
 fn emit_press_end(signal: HotkeySignal) {
     // 结束信号只随快捷键变更作废：同一键在信号排队期间再次按下，上一次的结束仍须送达。
     if HOTKEY_GENERATION.load(Ordering::SeqCst) == signal.generation {
+        crate::dlog!("[hotkey] 触发长按结束 (slot={})", signal.slot);
         let Some(app) = APP.get() else { return };
         crate::application::dictation::request_stop(app.clone());
     }
 }
 
 fn emit_cancel() {
+    crate::dlog!("[hotkey] 触发速记取消");
     if let Some(app) = APP.get() {
         crate::application::dictation::request_cancel(app.clone());
     }
@@ -477,6 +564,7 @@ fn emit_subtitle_toggle(sequence: u32) {
     if SUB_SEQUENCE.load(Ordering::SeqCst) != sequence {
         return;
     }
+    crate::dlog!("[hotkey] 触发字幕 toggle");
     if let Some(app) = APP.get() {
         crate::application::subtitles::request_toggle(app.clone());
     }
@@ -502,25 +590,42 @@ fn signal_capture_lock_key(vk: u16) {
     }
 }
 
+/// 判断注入按键（`LLKHF_INJECTED`）是否应被吞掉。
+/// - 带 `INTERNAL_EXTRA_INFO` 的是我们自己发出的关闭/补发/掩码按键，始终放行；
+/// - 其余来源注入的已接管非长按锁定键直接吞掉，避免外部程序偷偷翻开大写锁定；
+/// - 非锁定键（如 enigo 模拟的粘贴/键入）放行且不触发热键。
+fn should_swallow_injected_key(vk: u16, extra_info: usize) -> bool {
+    extra_info != INTERNAL_EXTRA_INFO && has_suppressed_lock_binding(vk)
+}
+
 unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-
-        // 忽略我们自己（enigo）注入的按键，避免粘贴/键入时误触发热键。
-        if (kb.flags.0 & LLKHF_INJECTED.0) != 0 {
-            return CallNextHookEx(None, code, wparam, lparam);
-        }
-
         let vk = kb.vkCode as u16;
         let message = wparam.0 as u32;
         let is_down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
         let is_up = message == WM_KEYUP || message == WM_SYSKEYUP;
+
+        // 注入按键不触发热键；但外部程序注入的已接管锁定键仍要拦截，防止打开大写锁定。
+        if (kb.flags.0 & LLKHF_INJECTED.0) != 0 {
+            if should_swallow_injected_key(vk, kb.dwExtraInfo) {
+                if is_down {
+                    signal_lock_key(LockKeyCommand::LogBlocked("injected", vk));
+                } else if is_up {
+                    signal_lock_key(LockKeyCommand::ForceOff(vk));
+                }
+                return LRESULT(1);
+            }
+            return CallNextHookEx(None, code, wparam, lparam);
+        }
 
         // 正在设置快捷键：锁定键一律吞掉、只上报，不让它真的切换大小写等状态，
         // 避免用户拿 CapsLock 之类的锁定键绑定快捷键时意外触发/卡死锁定状态。
         if CAPTURING.load(Ordering::SeqCst) && is_lock_key(vk) {
             if is_down {
                 signal_capture_lock_key(vk);
+            } else if is_up {
+                signal_lock_key(LockKeyCommand::ForceOff(vk));
             }
             return LRESULT(1);
         }
@@ -528,7 +633,6 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
         if vk == VK_ESCAPE {
             if is_down && DICTATION_ACTIVE.load(Ordering::SeqCst) {
                 if !ESCAPE_TRIGGERED.swap(true, Ordering::SeqCst) {
-                    crate::dlog!("[hotkey] 触发速记取消");
                     signal_cancel();
                 }
                 return LRESULT(1);
@@ -550,8 +654,10 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             }
         }
 
+        let now_ms = hook_now_ms();
         let generation = HOTKEY_GENERATION.load(Ordering::SeqCst);
         let mut matched_lock_key = false;
+        let mut suppressed_lock_key = false;
         let mut matching_toggle = None;
         let mut matching_press_hold = None;
         for slot in 0..MAX_DICTATION_BINDINGS {
@@ -559,9 +665,13 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             if target == 0 || target != vk {
                 continue;
             }
-            matched_lock_key |= is_lock_key(target);
+            let press_hold = BINDING_PRESS_HOLD[slot].load(Ordering::SeqCst);
+            if is_lock_key(target) {
+                matched_lock_key = true;
+                suppressed_lock_key |= !press_hold;
+            }
             if is_down && modifiers_match(TARGET_MODS[slot].load(Ordering::SeqCst)) {
-                if BINDING_PRESS_HOLD[slot].load(Ordering::SeqCst) {
+                if press_hold {
                     matching_press_hold = Some(slot);
                 } else {
                     matching_toggle = Some(slot);
@@ -577,14 +687,13 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 }
                 if !TRIGGERED[slot].swap(true, Ordering::SeqCst) {
                     PRESS_HOLD_STARTED[slot].store(false, Ordering::SeqCst);
-                    PRESS_DOWN_TIME[slot].store(kb.time, Ordering::SeqCst);
+                    PRESS_DOWN_TIME[slot].store(now_ms, Ordering::SeqCst);
                     let sequence = PRESS_SEQUENCE[slot]
                         .fetch_add(1, Ordering::SeqCst)
                         .wrapping_add(1);
                     let stops_active = DICTATION_ACTIVE.load(Ordering::SeqCst);
                     PRESS_STOPS_ACTIVE[slot].store(stops_active, Ordering::SeqCst);
                     if !stops_active {
-                        crate::dlog!("[hotkey] 触发长按开始候选 (slot={slot}, vk={vk:#04x})");
                         signal_press_start(
                             HotkeySignal {
                                 slot: slot as u8,
@@ -597,11 +706,10 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 }
             } else if let Some(slot) = matching_toggle {
                 if !TRIGGERED[slot].swap(true, Ordering::SeqCst) {
-                    PRESS_DOWN_TIME[slot].store(kb.time, Ordering::SeqCst);
+                    PRESS_DOWN_TIME[slot].store(now_ms, Ordering::SeqCst);
                     let sequence = PRESS_SEQUENCE[slot]
                         .fetch_add(1, Ordering::SeqCst)
                         .wrapping_add(1);
-                    crate::dlog!("[hotkey] 触发 toggle 候选 (slot={slot}, vk={vk:#04x})");
                     signal_toggle(
                         HotkeySignal {
                             slot: slot as u8,
@@ -614,7 +722,7 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             }
         } else if is_up {
             let mut handled_toggle_slots = [false; MAX_DICTATION_BINDINGS];
-            let mut synthetic_lock_tap = false;
+            let mut saw_synthetic_lock = false;
             for slot in 0..MAX_DICTATION_BINDINGS {
                 if TARGET_VKS[slot].load(Ordering::SeqCst) != vk
                     || !BINDING_PRESS_HOLD[slot].load(Ordering::SeqCst)
@@ -633,23 +741,20 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                     handled_toggle_slots[toggle_slot] = true;
                 }
                 let stops_active = PRESS_STOPS_ACTIVE[slot].swap(false, Ordering::SeqCst);
-                if is_synthetic_tap(PRESS_DOWN_TIME[slot].load(Ordering::SeqCst), kb.time) {
+                if is_synthetic_tap(PRESS_DOWN_TIME[slot].load(Ordering::SeqCst), now_ms) {
                     PRESS_SEQUENCE[slot].fetch_add(1, Ordering::SeqCst);
                     PRESS_HOLD_STARTED[slot].store(false, Ordering::SeqCst);
-                    crate::dlog!("[hotkey] 忽略模拟点击 (slot={slot}, vk={vk:#04x})");
-                    synthetic_lock_tap |= is_lock_key(vk);
+                    saw_synthetic_lock |= is_lock_key(vk);
                     continue;
                 }
                 let press_hold_started = PRESS_HOLD_STARTED[slot].swap(false, Ordering::SeqCst);
                 if stops_active || press_hold_started {
-                    crate::dlog!("[hotkey] 触发长按结束 (slot={slot}, vk={vk:#04x})");
                     signal_press_end(HotkeySignal {
                         slot: slot as u8,
                         generation,
                         sequence: PRESS_SEQUENCE[slot].load(Ordering::SeqCst),
                     });
                 } else if let Some(toggle_slot) = paired_toggle {
-                    crate::dlog!("[hotkey] 触发配对短按 (slot={toggle_slot}, vk={vk:#04x})");
                     let sequence = PRESS_SEQUENCE[toggle_slot]
                         .fetch_add(1, Ordering::SeqCst)
                         .wrapping_add(1);
@@ -662,7 +767,8 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                         0,
                     );
                 } else if is_lock_key(vk) {
-                    unsafe { tap_key(vk) };
+                    // 纯长按模式下的真实短按：保留锁定键原有功能，异步补发避免在钩子里重入。
+                    signal_lock_key(LockKeyCommand::Tap(vk));
                 }
             }
             for slot in 0..MAX_DICTATION_BINDINGS {
@@ -670,20 +776,22 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                     && !BINDING_PRESS_HOLD[slot].load(Ordering::SeqCst)
                     && !handled_toggle_slots[slot]
                     && TRIGGERED[slot].swap(false, Ordering::SeqCst)
-                    && is_synthetic_tap(PRESS_DOWN_TIME[slot].load(Ordering::SeqCst), kb.time)
+                    && is_synthetic_tap(PRESS_DOWN_TIME[slot].load(Ordering::SeqCst), now_ms)
                 {
                     PRESS_SEQUENCE[slot].fetch_add(1, Ordering::SeqCst);
-                    crate::dlog!("[hotkey] 忽略模拟点击 (slot={slot}, vk={vk:#04x})");
-                    synthetic_lock_tap |= is_lock_key(vk);
+                    saw_synthetic_lock |= is_lock_key(vk);
                 }
             }
-            if synthetic_lock_tap {
-                // 被吞掉的是其他程序要的锁定键切换，原样还给系统。
-                unsafe { tap_key(vk) };
+            if saw_synthetic_lock {
+                signal_lock_key(LockKeyCommand::LogBlocked("synthetic", vk));
+            }
+            if suppressed_lock_key {
+                // 若此前被管理员窗口或外部途径意外打开了大写锁定，释放时自动归零。
+                signal_lock_key(LockKeyCommand::ForceOff(vk));
             }
         }
         if matched_lock_key {
-            // 普通模式吞掉锁定键；长按模式短按释放时已模拟一次系统点击。
+            // 非长按模式吞掉锁定键；纯长按模式真实短按释放时已异步补发一次系统点击。
             return LRESULT(1);
         }
 
@@ -693,9 +801,8 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             let lock = is_lock_key(sub_target);
             if is_down {
                 if modifiers_match(sub_mods) && !SUB_TRIGGERED.swap(true, Ordering::SeqCst) {
-                    SUB_DOWN_TIME.store(kb.time, Ordering::SeqCst);
+                    SUB_DOWN_TIME.store(now_ms, Ordering::SeqCst);
                     let sequence = SUB_SEQUENCE.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
-                    crate::dlog!("[hotkey] 触发字幕 toggle 候选 (vk={vk:#04x})");
                     signal_subtitle_toggle(sequence);
                 }
                 if lock {
@@ -703,15 +810,15 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 }
             } else if is_up {
                 if SUB_TRIGGERED.swap(false, Ordering::SeqCst)
-                    && is_synthetic_tap(SUB_DOWN_TIME.load(Ordering::SeqCst), kb.time)
+                    && is_synthetic_tap(SUB_DOWN_TIME.load(Ordering::SeqCst), now_ms)
                 {
                     SUB_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-                    crate::dlog!("[hotkey] 忽略字幕模拟点击 (vk={vk:#04x})");
                     if lock {
-                        unsafe { tap_key(vk) };
+                        signal_lock_key(LockKeyCommand::LogBlocked("subtitle-synthetic", vk));
                     }
                 }
                 if lock {
+                    signal_lock_key(LockKeyCommand::ForceOff(vk));
                     return LRESULT(1);
                 }
             }
@@ -784,8 +891,11 @@ pub fn code_to_vk(code: &str) -> Option<u16> {
 mod tests {
     use super::*;
 
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn multiple_bindings_replace_slots_and_advance_generation() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let before = HOTKEY_GENERATION.load(Ordering::SeqCst);
         set_hotkeys(&[
             HotkeyBinding {
@@ -823,6 +933,7 @@ mod tests {
 
     #[test]
     fn binding_count_is_bounded_for_hook_safety() {
+        let _guard = TEST_LOCK.lock().unwrap();
         let bindings = (0..=MAX_DICTATION_BINDINGS)
             .map(|index| HotkeyBinding {
                 vk: 0x70 + index as u16,
@@ -832,5 +943,35 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(set_hotkeys(&bindings).is_err());
+    }
+
+    #[test]
+    fn external_injected_caps_lock_is_swallowed_only_when_suppressed() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        set_capturing(false);
+        clear_subtitle_hotkey();
+        // 纯长按模式允许短按切换大写，不拦截外部注入；单击模式拦截外部注入，但始终放行本模块内部注入。
+        set_hotkeys(&[HotkeyBinding {
+            vk: VK_CAPITAL,
+            mods: 0,
+            profile_id: None,
+            press_hold_mode: true,
+        }])
+        .unwrap();
+        assert!(!should_swallow_injected_key(VK_CAPITAL, 0));
+
+        set_hotkeys(&[HotkeyBinding {
+            vk: VK_CAPITAL,
+            mods: 0,
+            profile_id: None,
+            press_hold_mode: false,
+        }])
+        .unwrap();
+        assert!(should_swallow_injected_key(VK_CAPITAL, 0));
+        assert!(!should_swallow_injected_key(VK_CAPITAL, INTERNAL_EXTRA_INFO));
+        assert!(!should_swallow_injected_key(0x41, 0));
+
+        set_hotkeys(&[]).unwrap();
+        assert!(!should_swallow_injected_key(VK_CAPITAL, 0));
     }
 }
