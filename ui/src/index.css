@@ -95,11 +95,11 @@
 
   --titlebar-h: 40px;
   --rail-w: 68px;
-  --list-col-w: 288px;
+  --list-col-w: 272px;
   /** 检查器内容的最大宽度：窗口再宽，名称与右侧控件也不会被拉开。 */
-  --inspector-max-w: 720px;
-  --row-h: 48px;
-  --control-h: 32px;
+  --inspector-max-w: 740px;
+  --row-h: 52px;
+  --control-h: 34px;
   --control-h-sm: 28px;
   /* 分段按钮每段的最小宽度：短选项也给足点击面积 */
   --segment-min-w: 76px;
@@ -122,6 +122,15 @@
   --accent-soft: color-mix(in srgb, var(--color-accent) 14%, transparent);
   --accent-soft-strong: color-mix(in srgb, var(--color-accent) 20%, transparent);
   --accent-ring: var(--color-accent-text);
+}
+
+/* 主工作台画布在亮色调下增加极克制的顶部柔和天光，与引导页视觉一脉相承 */
+.app-main-canvas {
+  background-image: radial-gradient(
+    780px 300px at 60% -60px,
+    color-mix(in srgb, var(--color-accent) 6%, transparent),
+    transparent 70%
+  );
 }
 
 .ui-help-label {

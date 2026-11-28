@@ -29,21 +29,21 @@ const VARIANT_STYLES: Record<TabsVariant, {
   inactive: string;
 }> = {
   page: {
-    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-0.5 rounded-[var(--radius-md)] bg-[var(--color-surface-hover)] p-0.5",
-    button: "h-full min-w-[var(--segment-min-w)] rounded-[var(--radius-sm)] px-4 text-[13px]",
-    active: "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]",
+    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-1 rounded-xl bg-[var(--color-surface-hover)] p-1",
+    button: "h-full min-w-[var(--segment-min-w)] rounded-[8px] px-3.5 text-[13px]",
+    active: "bg-[var(--color-surface)] font-medium text-[var(--color-fg)] shadow-[var(--shadow-sm)]",
     inactive: "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
   },
   subpage: {
     list: "flex h-[var(--control-h)] w-full items-end gap-5 border-b border-[var(--color-line)]",
     button: "-mb-px h-[var(--control-h-sm)] border-b-2 border-transparent px-1 text-sm",
-    active: "border-[var(--color-accent)] text-[var(--color-fg)]",
+    active: "border-[var(--color-accent)] font-medium text-[var(--color-fg)]",
     inactive: "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]",
   },
   view: {
-    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-0.5 rounded-[var(--radius-md)] bg-[var(--color-surface-hover)] p-0.5",
-    button: "h-full min-w-[var(--segment-min-w)] rounded-[var(--radius-sm)] px-4 text-[13px]",
-    active: "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]",
+    list: "inline-flex h-[var(--control-h)] w-fit items-center gap-1 rounded-xl bg-[var(--color-surface-hover)] p-1",
+    button: "h-full min-w-[var(--segment-min-w)] rounded-[8px] px-3.5 text-[13px]",
+    active: "bg-[var(--color-surface)] font-medium text-[var(--color-fg)] shadow-[var(--shadow-sm)]",
     inactive: "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]",
   },
 };

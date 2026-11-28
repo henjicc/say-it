@@ -2,9 +2,9 @@
 .ob-shell {
   background-color: var(--color-bg);
   background-image: radial-gradient(
-    720px 320px at 50% -40px,
-    color-mix(in srgb, var(--color-accent) 10%, transparent),
-    transparent 70%
+    720px 320px at 50% 0px,
+    color-mix(in srgb, var(--color-accent) 8%, transparent),
+    transparent 72%
   );
   color: var(--color-fg);
 }

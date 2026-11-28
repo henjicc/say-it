@@ -26,7 +26,7 @@ export function Group({
   return (
     <section className={cn("flex flex-col gap-2.5", className)}>
       {title && <SectionHeader title={title} description={description} right={right} />}
-      <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] shadow-[var(--shadow-raise)] [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
+      <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-surface)] shadow-[var(--shadow-raise)] [&>*+*]:border-t [&>*+*]:border-[color-mix(in_srgb,var(--color-line)_75%,transparent)]">
         {children}
       </div>
     </section>
@@ -57,13 +57,13 @@ export function Row({
 }) {
   const text = <HelpLabel content={hint}>{label}</HelpLabel>;
   return (
-    <div className={cn("flex flex-col justify-center px-3.5", disabled && "opacity-50", className)}>
+    <div className={cn("flex flex-col justify-center px-5", disabled && "opacity-50", className)}>
       <div className="flex min-h-[var(--row-h)] items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
           {controlId ? (
-            <label htmlFor={controlId} className="min-w-0 text-[13px] text-[var(--color-fg)]">{text}</label>
+            <label htmlFor={controlId} className="min-w-0 text-[13.5px] text-[var(--color-fg)]">{text}</label>
           ) : (
-            <span className="min-w-0 text-[13px] text-[var(--color-fg)]">{text}</span>
+            <span className="min-w-0 text-[13.5px] text-[var(--color-fg)]">{text}</span>
           )}
           {labelAside && <span className="flex-none text-[13px]">{labelAside}</span>}
         </div>

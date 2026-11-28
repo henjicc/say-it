@@ -23,11 +23,11 @@ export function MasterDetail({
 }) {
   return (
     <div className="flex min-h-0 flex-1">
-      <section className="flex w-[var(--list-col-w)] flex-none flex-col border-r border-[var(--color-line)] bg-[var(--color-bg)]">
+      <section className="flex w-[var(--list-col-w)] flex-none flex-col border-r border-[var(--color-line)] bg-[color-mix(in_srgb,var(--color-bg)_76%,var(--color-bg-sidebar))]">
         <WindowDragStrip />
-        <div className="flex min-h-0 flex-1 flex-col px-4 pt-5 pb-4">
-          <div className="flex h-8 items-center justify-between gap-2 pr-1 pl-1.5">
-            <h1 className="text-lg font-semibold text-[var(--color-fg)]">{title}</h1>
+        <div className="flex min-h-0 flex-1 flex-col px-4 pt-6 pb-5">
+          <div className="flex h-8 items-center justify-between gap-2 pr-1 pl-2">
+            <h1 className="text-[19px] font-semibold tracking-tight text-[var(--color-fg)]">{title}</h1>
             {titleRight}
           </div>
           <div className="mt-4 min-h-0 flex-1 overflow-y-auto">{list}</div>
@@ -36,7 +36,7 @@ export function MasterDetail({
       </section>
       <div className="flex min-w-0 flex-1 flex-col">
         <WindowDragStrip />
-        <main className="min-h-0 flex-1 overflow-y-auto px-8 pt-5 pb-8">
+        <main className="min-h-0 flex-1 overflow-y-auto px-9 pt-6 pb-10">
           <div className={cn("w-full", !wide && "mx-auto max-w-[var(--inspector-max-w)]")}>{children}</div>
         </main>
       </div>
@@ -47,16 +47,16 @@ export function MasterDetail({
 /** 检查器标题行：标题 + 右侧开关或操作。 */
 export function InspectorHeader({ title, right, className }: { title: React.ReactNode; right?: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("mb-4 flex h-8 items-center justify-between gap-3", className)}>
-      <h2 className="text-lg font-semibold text-[var(--color-fg)]">{title}</h2>
+    <div className={cn("mb-5 flex h-8 items-center justify-between gap-3", className)}>
+      <h2 className="text-[19px] font-semibold tracking-tight text-[var(--color-fg)]">{title}</h2>
       {right && <div className="flex items-center gap-2">{right}</div>}
     </div>
   );
 }
 
-/** 检查器内容：分组之间统一 16px 间距。 */
+/** 检查器内容：分组之间统一 20px 间距，拉开页面呼吸感。 */
 export function InspectorBody({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("flex flex-col gap-4", className)}>{children}</div>;
+  return <div className={cn("flex flex-col gap-5", className)}>{children}</div>;
 }
 
 export interface NodeItem<K extends string> {
@@ -109,23 +109,23 @@ export function NodeList<K extends string>({
               aria-current={selected ? "true" : undefined}
               onClick={() => onSelect(item.key)}
               className={cn(
-                "flex h-11 w-full items-center gap-3 rounded-[var(--radius-md)] border px-4 text-left transition-colors duration-[var(--dur-fast)]",
+                "flex h-10 w-full items-center gap-3 rounded-xl border px-3.5 text-left transition-all duration-[var(--dur-fast)]",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
                 selected
-                  ? "border-transparent bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] shadow-[var(--shadow-sm)]"
+                  ? "border-[var(--color-line)] bg-[var(--color-surface)] font-medium text-[var(--color-accent-text)] shadow-[var(--shadow-sm)]"
                   : "border-transparent hover:bg-[var(--color-surface-hover)]",
               )}
             >
-              <span aria-hidden className={cn("h-4 w-4 flex-none [&>svg]:h-full [&>svg]:w-full", !selected && "text-[var(--color-fg-subtle)]")}>
+              <span aria-hidden className={cn("h-4 w-4 flex-none [&>svg]:h-full [&>svg]:w-full", selected ? "text-[var(--color-accent-text)]" : "text-[var(--color-fg-subtle)]")}>
                 {item.icon}
               </span>
-              <span className={cn("min-w-0 flex-1 truncate text-sm", !selected && "text-[var(--color-fg-muted)]")}>{item.label}</span>
-              {item.off && <span className={cn("flex-none text-xs", !selected && "text-[var(--color-fg-subtle)]")}>已关闭</span>}
+              <span className={cn("min-w-0 flex-1 truncate text-[13.5px]", selected ? "text-[var(--color-fg)]" : "text-[var(--color-fg-muted)]")}>{item.label}</span>
+              {item.off && <span className="flex-none text-xs text-[var(--color-fg-subtle)]">已关闭</span>}
               {item.status && (
                 <span
                   role="img"
                   aria-label={item.status.label}
-                  className={cn("h-2 w-2 flex-none rounded-full", STATUS_DOT[item.status.tone], selected && item.status.tone === "ok" && "bg-[var(--color-accent-control-contrast)]")}
+                  className={cn("h-2 w-2 flex-none rounded-full", STATUS_DOT[item.status.tone])}
                 />
               )}
             </button>

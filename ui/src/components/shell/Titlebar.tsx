@@ -13,7 +13,7 @@ const appWindow = getCurrentWindow();
  * 标题栏。专业模式只有品牌与窗口按钮；简单模式把功能切换放进标题栏中部，
  * 设置作为图标放在窗口按钮左侧。macOS 只在简单模式出现，左侧留给系统红绿灯，不放品牌。
  */
-export function Titlebar() {
+export function Titlebar({ onboardingOpen = false }: { onboardingOpen?: boolean }) {
   const mode = useUiStore((s) => s.layoutMode);
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
@@ -43,25 +43,26 @@ export function Titlebar() {
     };
   }, []);
 
-  const simple = mode === "simple";
+  const simple = mode === "simple" && !onboardingOpen;
 
   return (
     <div
       data-tauri-drag-region
       className={cn(
-        "relative z-[var(--z-titlebar)] flex h-[var(--titlebar-h)] flex-none items-center bg-[var(--color-bg-titlebar)] select-none",
-        isMacOS ? "pl-[78px]" : "pl-3.5",
+        "relative z-[var(--z-titlebar)] flex h-[var(--titlebar-h)] flex-none items-center select-none transition-colors duration-[var(--dur-fast)]",
+        onboardingOpen ? "bg-[var(--color-bg)]" : "bg-[var(--color-bg-titlebar)]",
+        isMacOS ? "pl-[78px]" : "pl-4",
       )}
     >
       {!isMacOS && (
         <div data-tauri-drag-region className="flex items-center gap-2 pr-1.5">
           <AppMark />
-          {!simple && <span data-tauri-drag-region className="text-[13px] font-semibold text-[var(--color-fg)]">说吧！</span>}
+          {(!simple || onboardingOpen) && <span data-tauri-drag-region className="text-[13px] font-semibold tracking-tight text-[var(--color-fg)]">说吧！</span>}
         </div>
       )}
 
       {simple ? (
-        <nav aria-label="功能" data-tauri-drag-region className="no-drag flex flex-1 justify-center gap-0.5">
+        <nav aria-label="功能" data-tauri-drag-region className="no-drag flex flex-1 justify-center gap-1">
           {SIMPLE_NAV.map((item) => (
             <button
               key={item.view}
@@ -69,9 +70,11 @@ export function Titlebar() {
               aria-current={view === item.view ? "page" : undefined}
               onClick={() => setView(item.view)}
               className={cn(
-                "h-7 rounded-[7px] px-3 text-[13px] transition-colors duration-[var(--dur-fast)]",
+                "h-7 rounded-full px-3 text-[13px] transition-all duration-[var(--dur-fast)]",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
-                view === item.view ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] shadow-[var(--shadow-sm)]" : "text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
+                view === item.view
+                  ? "bg-[var(--color-surface)] font-medium text-[var(--color-accent-text)] shadow-[var(--shadow-sm)] border border-[var(--color-line)]"
+                  : "border border-transparent text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
               )}
             >
               {item.label}
@@ -89,9 +92,11 @@ export function Titlebar() {
           aria-current={view === "settings" ? "page" : undefined}
           onClick={() => setView("settings")}
           className={cn(
-            "no-drag mr-1 grid h-7 w-8 place-items-center rounded-[7px] transition-colors duration-[var(--dur-fast)]",
+            "no-drag mr-1.5 grid h-7 w-8 place-items-center rounded-full transition-all duration-[var(--dur-fast)]",
             "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
-            view === "settings" ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] shadow-[var(--shadow-sm)]" : "text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
+            view === "settings"
+              ? "bg-[var(--color-surface)] text-[var(--color-accent-text)] shadow-[var(--shadow-sm)] border border-[var(--color-line)]"
+              : "border border-transparent text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
           )}
         >
           <span className="h-[15px] w-[15px]">{SETTINGS_NAV.icon}</span>

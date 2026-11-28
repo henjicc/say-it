@@ -16,9 +16,9 @@ type FieldSize = ControlSize | "auto";
 // 谁要是拿得到不带尺寸的 base，就能拼出一个没有高度的控件——
 // 这种错误不报错、不失败，只有截图能发现，所以干脆不给这个入口。
 const fieldBase =
-  "w-full rounded-[var(--radius-md)] border border-[var(--color-line-strong)] bg-[var(--color-surface)] text-[var(--color-fg)] shadow-[var(--shadow-raise)] " +
-  "placeholder:text-[var(--color-fg-faint)] transition-colors duration-[var(--dur-fast)] " +
-  "focus:outline-none focus:border-[var(--accent-ring)] disabled:opacity-50";
+  "w-full rounded-[10px] border border-[var(--color-line-strong)] bg-[var(--color-surface)] text-[var(--color-fg)] shadow-[var(--shadow-sm)] " +
+  "placeholder:text-[var(--color-fg-faint)] transition-all duration-[var(--dur-fast)] " +
+  "focus:outline-none focus:border-[var(--color-accent)] focus:ring-[3px] focus:ring-[var(--accent-soft)] disabled:opacity-50";
 
 const fieldSizes: Record<FieldSize, string> = {
   sm: "h-[var(--control-h-sm)] px-2.5 py-1 text-xs",

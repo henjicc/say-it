@@ -11,9 +11,9 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 
 const variants: Record<Variant, string> = {
   primary:
-    "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] font-medium hover:bg-[var(--color-accent-control-hover)] active:bg-[var(--color-accent-control-active)] disabled:bg-[var(--color-surface-strong)] disabled:text-[var(--color-fg-faint)]",
+    "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] font-medium shadow-[0_1px_2px_rgba(37,99,235,0.22)] hover:bg-[var(--color-accent-control-hover)] active:bg-[var(--color-accent-control-active)] disabled:bg-[var(--color-surface-strong)] disabled:text-[var(--color-fg-faint)] disabled:shadow-none",
   ghost:
-    "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line-strong)] shadow-[var(--shadow-raise)] hover:bg-[var(--color-surface-hover)] active:bg-[var(--color-surface-strong)] disabled:opacity-40",
+    "bg-[var(--color-surface)] text-[var(--color-fg)] border border-[var(--color-line-strong)] shadow-[var(--shadow-sm)] hover:bg-[var(--color-surface-hover)] active:bg-[var(--color-surface-strong)] disabled:opacity-40",
   /** 无底无框的次要操作，例如分步弹窗的「上一步」。 */
   text:
     "bg-transparent text-[var(--color-fg-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)] active:bg-[var(--color-surface-strong)] disabled:opacity-40",

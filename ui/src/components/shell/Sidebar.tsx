@@ -11,10 +11,10 @@ function RailButton({ item, active, onClick }: { item: NavItem; active: boolean;
       aria-current={active ? "page" : undefined}
       onClick={onClick}
       className={cn(
-        "flex h-[52px] w-[52px] flex-col items-center justify-center gap-1 rounded-[var(--radius-md)] text-xs transition-colors duration-[var(--dur-fast)]",
+        "flex h-[52px] w-[54px] flex-col items-center justify-center gap-1 rounded-xl text-xs transition-all duration-[var(--dur-fast)]",
         "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
         active
-          ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] shadow-[var(--shadow-sm)]"
+          ? "bg-[var(--accent-soft)] font-medium text-[var(--color-accent-text)]"
           : "text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
       )}
     >
@@ -31,7 +31,7 @@ export function Sidebar() {
   const developer = useDeveloperStore((s) => s.enabled);
 
   return (
-    <nav aria-label="主导航" className="flex w-[var(--rail-w)] flex-none flex-col items-center gap-1 bg-[var(--color-bg-sidebar)] pt-1 pb-3">
+    <nav aria-label="主导航" className="flex w-[var(--rail-w)] flex-none flex-col items-center gap-1.5 bg-[var(--color-bg-sidebar)] pt-2 pb-4">
       <WindowDragStrip />
       {proNavGroups(developer).map((group, index) => (
         <div key={index} className="flex flex-col items-center gap-1">

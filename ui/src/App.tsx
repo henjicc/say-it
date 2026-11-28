@@ -130,7 +130,7 @@ export default function App() {
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-[var(--color-bg-sidebar)] text-[var(--color-fg)]">
       {!settingsReady ? null : <>
-      {!macPro && <Titlebar />}
+      {!macPro && <Titlebar onboardingOpen={setup !== "closed"} />}
       {initError && (
         <div
           role="alert"
@@ -149,9 +149,9 @@ export default function App() {
       <div className="relative flex min-h-0 flex-1">
         {layoutMode === "pro" && <Sidebar />}
         <div className={cn(
-          "flex min-h-0 min-w-0 flex-1 overflow-hidden border-t border-[var(--color-line)] bg-[var(--color-bg)]",
+          "app-main-canvas flex min-h-0 min-w-0 flex-1 overflow-hidden border-t border-[var(--color-line)] bg-[var(--color-bg)]",
           // macOS 专业模式各栏直通窗口顶部，内容层只靠左侧细线与导航分开。
-          macPro ? "border-t-0 border-l" : layoutMode === "pro" ? "rounded-tl-[10px] border-l" : "flex-col rounded-t-[10px]",
+          macPro ? "border-t-0 border-l" : layoutMode === "pro" ? "rounded-tl-[16px] border-l" : "flex-col rounded-t-[14px]",
         )}>
           <PageErrorBoundary key={`${layoutMode}:${view}`}>
             {layoutMode === "pro" ? PRO_VIEWS[view] : SIMPLE_VIEWS[view] ?? SIMPLE_VIEWS.dictation}

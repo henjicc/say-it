@@ -209,20 +209,24 @@ export function OnboardingWizard({
         macPro ? "top-0" : "top-[var(--titlebar-h)]",
       )}
     >
-      {/* 极简浮动顶栏 */}
+      {/* 极简浮动顶栏：Windows 已有窗口标题栏，不重复绘制品牌，三栏网格让进度点绝对居中 */}
       <header
         data-tauri-drag-region={macPro ? "" : undefined}
         className={cn(
-          "flex flex-none items-center justify-between gap-4 px-6 pt-5 pb-2 select-none",
-          macPro && "pl-[86px]",
+          "grid flex-none grid-cols-[1fr_auto_1fr] items-center gap-4 px-6 select-none",
+          macPro ? "pt-5 pb-2 pl-[86px]" : "pt-3 pb-1",
         )}
       >
         <div className="flex items-center gap-2.5">
-          <AppMark />
-          <span className="text-[14px] font-semibold tracking-tight text-[var(--color-fg)]">说吧！</span>
+          {macPro && (
+            <>
+              <AppMark />
+              <span className="text-[14px] font-semibold tracking-tight text-[var(--color-fg)]">说吧！</span>
+            </>
+          )}
         </div>
 
-        <nav aria-label="设置步骤" className="no-drag flex items-center gap-2">
+        <nav aria-label="设置步骤" className="no-drag flex items-center justify-center gap-2">
           {STEPS.map((label, index) => {
             const active = index === step;
             const passed = index < step;
@@ -258,9 +262,9 @@ export function OnboardingWizard({
           })}
         </nav>
 
-        <div className="no-drag flex items-center gap-2">
+        <div className="no-drag flex items-center justify-end gap-2">
           {envBadge && (
-            <span className="hidden items-center gap-1.5 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] px-2.5 py-1 text-xs text-[var(--color-fg-muted)] sm:inline-flex">
+            <span className="hidden items-center gap-1.5 rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] px-2.5 py-1 text-xs text-[var(--color-fg-muted)] shadow-[var(--shadow-sm)] sm:inline-flex">
               <span
                 className="h-1.5 w-1.5 rounded-full"
                 style={{
@@ -271,103 +275,105 @@ export function OnboardingWizard({
             </span>
           )}
           {!required && (
-            <Button variant="text" size="sm" onClick={onClose}>
+            <Button variant="text" size="sm" className="rounded-full" onClick={onClose}>
               关闭
             </Button>
           )}
         </div>
       </header>
 
-      {/* 主内容区（宽窗/窄窗自适应，居中呼吸感） */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-4">
-        <div key={`${step}-${mode}`} className="ob-step-enter mx-auto my-auto w-full max-w-[740px]">
-          {step === 0 && (
-            <PermissionStep
-              dataRoot={dataRoot}
-              onOpenDirPicker={() => setDirModalOpen(true)}
-            />
-          )}
-          {step === 1 && (
-            <ModeStep
-              mode={mode}
-              onMode={(nextMode) => {
-                setError("");
-                setPickedMode(nextMode);
-              }}
-              hardware={hardware}
-            />
-          )}
-          {step === 2 && (
-            <PlanStep
-              mode={mode}
-              hardware={hardware}
-              dataRoot={dataRoot}
-              localPlan={localPlan}
-              asrTier={asrTier}
-              onlineId={onlineId}
-              mixActive={mixActive}
-              onlineKeys={onlineKeys}
-              deepseekKey={deepseekKey}
-              error={error}
-              onSwitchToOnline={() => {
-                setError("");
-                setPickedMode("online");
-              }}
-              onOpenDirPicker={() => setDirModalOpen(true)}
-              onLocalPlan={(plan) => {
-                setError("");
-                setPickedLocalPlan(plan);
-              }}
-              onAsrTier={setAsrTier}
-              onOnlineId={(id) => {
-                setError("");
-                setOnlineId(id);
-              }}
-              onMixActive={(active) => {
-                setError("");
-                setMixActive(active);
-              }}
-              onOnlineKeyChange={(bundleId, field, value) => {
-                setError("");
-                setOnlineKeys((prev) => ({
-                  ...prev,
-                  [bundleId]: { ...(prev[bundleId] ?? {}), [field]: value },
-                }));
-              }}
-              onDeepseekKeyChange={(value) => {
-                setError("");
-                setDeepseekKey(value);
-              }}
-            />
-          )}
-          {step === 3 && <TriggerStep error={error} />}
-        </div>
+      {/* 主内容与底部操作作为一个完整居中组合，紧贴卡片下方，绝不在最大化窗口里孤立飘到底部 */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-6">
+        <div className="mx-auto my-auto flex w-full max-w-[740px] flex-col">
+          <div key={`${step}-${mode}`} className="ob-step-enter w-full">
+            {step === 0 && (
+              <PermissionStep
+                dataRoot={dataRoot}
+                onOpenDirPicker={() => setDirModalOpen(true)}
+              />
+            )}
+            {step === 1 && (
+              <ModeStep
+                mode={mode}
+                onMode={(nextMode) => {
+                  setError("");
+                  setPickedMode(nextMode);
+                }}
+                hardware={hardware}
+              />
+            )}
+            {step === 2 && (
+              <PlanStep
+                mode={mode}
+                hardware={hardware}
+                dataRoot={dataRoot}
+                localPlan={localPlan}
+                asrTier={asrTier}
+                onlineId={onlineId}
+                mixActive={mixActive}
+                onlineKeys={onlineKeys}
+                deepseekKey={deepseekKey}
+                error={error}
+                onSwitchToOnline={() => {
+                  setError("");
+                  setPickedMode("online");
+                }}
+                onOpenDirPicker={() => setDirModalOpen(true)}
+                onLocalPlan={(plan) => {
+                  setError("");
+                  setPickedLocalPlan(plan);
+                }}
+                onAsrTier={setAsrTier}
+                onOnlineId={(id) => {
+                  setError("");
+                  setOnlineId(id);
+                }}
+                onMixActive={(active) => {
+                  setError("");
+                  setMixActive(active);
+                }}
+                onOnlineKeyChange={(bundleId, field, value) => {
+                  setError("");
+                  setOnlineKeys((prev) => ({
+                    ...prev,
+                    [bundleId]: { ...(prev[bundleId] ?? {}), [field]: value },
+                  }));
+                }}
+                onDeepseekKeyChange={(value) => {
+                  setError("");
+                  setDeepseekKey(value);
+                }}
+              />
+            )}
+            {step === 3 && <TriggerStep error={error} />}
+          </div>
 
-        {/* 浮动无边框底栏 */}
-        <footer className="mx-auto flex w-full max-w-[740px] flex-none items-center justify-between gap-4 pt-6 pb-2">
-          <div>
-            {step > 0 ? (
-              <Button variant="text" onClick={handleBack} disabled={saving} className="rounded-full px-4">
-                ← 上一步
+          {/* 紧贴内容下方的操作行，与上方卡片左右边缘严格对齐 */}
+          <footer className="mt-8 flex w-full flex-none items-center justify-between gap-4">
+            <div>
+              {step > 0 ? (
+                <Button variant="text" onClick={handleBack} disabled={saving} className="rounded-full px-4">
+                  ← 上一步
+                </Button>
+              ) : (
+                <span />
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              {!canNext && footerHint && (
+                <span className="text-xs text-[var(--color-fg-muted)]">{footerHint}</span>
+              )}
+              <Button
+                variant="primary"
+                disabled={!canNext}
+                onClick={() => void handleNext()}
+                className="h-10 rounded-full px-7 text-[13.5px]"
+              >
+                {nextLabel}
               </Button>
-            ) : (
-              <span />
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            {!canNext && footerHint && (
-              <span className="text-xs text-[var(--color-fg-muted)]">{footerHint}</span>
-            )}
-            <Button
-              variant="primary"
-              disabled={!canNext}
-              onClick={() => void handleNext()}
-              className="h-10 rounded-full px-6 text-[13.5px]"
-            >
-              {nextLabel}
-            </Button>
-          </div>
-        </footer>
+            </div>
+          </footer>
+        </div>
       </div>
 
       <DataDirModal
