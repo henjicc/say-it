@@ -421,6 +421,14 @@ fn main() {
                 }
             }
 
+            let initial_theme = app
+                .state::<RuntimeState>()
+                .app_settings
+                .lock()
+                .map(|settings| settings.theme.clone())
+                .unwrap_or_default();
+            desktop::floating_orb::sync_floating_orb_theme(app.handle(), &initial_theme);
+
             let verbose_logging = app
                 .state::<RuntimeState>()
                 .app_settings

@@ -1,23 +1,23 @@
 ---
 name: "说吧！"
-description: "克制、专业、高效的桌面语音工作台"
+description: "清亮、通透、高效的桌面语音工作台"
 colors:
-  accent: "#2767EA"
-  frame: "#0C0C0C"
-  content: "#0F0F0F"
-  panel: "#161616"
-  surface: "#222222"
-  surface-hover: "#292929"
-  surface-strong: "#333333"
-  foreground: "#ECEDEF"
-  foreground-muted: "#B4B7BD"
-  foreground-subtle: "#989CA4"
-  foreground-faint: "#70747C"
-  line: "#FFFFFF1C"
-  line-strong: "#FFFFFF2E"
-  success: "#3FB27F"
-  error: "#E5726C"
-  warning: "#D9A441"
+  accent: "#2563EB"
+  frame: "#EEF1F5"
+  content: "#F6F8FB"
+  panel: "#FFFFFF"
+  surface: "#FFFFFF"
+  surface-hover: "#EDF1F6"
+  surface-strong: "#E3E8F0"
+  foreground: "#0F172A"
+  foreground-muted: "#475569"
+  foreground-subtle: "#526074"
+  foreground-faint: "#94A3B8"
+  line: "#0F172A14"
+  line-strong: "#0F172A24"
+  success: "#059669"
+  error: "#DC2626"
+  warning: "#D97706"
 typography:
   page-title:
     fontFamily: "HarmonyOS Sans SC, MiSans, Source Han Sans SC, Noto Sans SC, system-ui, Segoe UI, Microsoft YaHei UI, sans-serif"
@@ -34,9 +34,9 @@ typography:
     fontWeight: 400
 rounded:
   sm: "6px"
-  md: "8px"
-  lg: "10px"
-  xl: "12px"
+  md: "9px"
+  lg: "12px"
+  xl: "16px"
 spacing:
   group: "16px"
   inspector-x: "32px"
@@ -55,9 +55,9 @@ components:
 
 ## Overview
 
-**Creative North Star: "精密语音工作台"**
+**Creative North Star: "清亮通透的桌面语音工作台"**
 
-高频桌面生产力工具。界面克制、严肃：靠明度层级、细边框和排版建立秩序，不靠装饰。主窗口有两种形态，按窗口宽度自动切换：
+高频桌面生产力工具。默认采用清亮年轻的亮色调：冷白底（`#F6F8FB`）、纯白轻盈浮卡（`#FFFFFF`）、柔和投影与活力品牌蓝（`#2563EB`），拉开留白与呼吸感，同时保持暗色调（`#111318` 底）同样干净现代。主窗口有两种形态，按窗口宽度自动切换：
 
 - **简单模式**（窄窗口，默认约 440×400）：功能切换放在标题栏中部，设置是窗口按钮左侧的图标；每页只露出最必要的 3～5 项。
 - **专业模式**（宽窗口，默认 1080×860，最大化一定是专业模式）：左侧 68px 图标导航，每页是「中栏列表 + 右侧检查器」。macOS 的专业模式不设单独的标题栏：导航与各栏直通窗口顶部，顶部留出与标题栏同高的空白用来拖动窗口，系统红绿灯落在导航顶部；红绿灯旁不放应用图标和名称。
@@ -92,7 +92,7 @@ components:
 
 文字下限：需要阅读的文字最低用 `foreground-subtle`，默认背景下它在两种色调的外框、内容层和分组面上都达到 AA；新填的自定义背景至少要让它在内容层上达到 AA，否则不保存。`foreground-faint` 只给占位提示、禁用态、搜索图标和分隔符。分组与分隔线用 `line`，输入框、下拉框和普通按钮的边框用 `line-strong`。
 
-亮色调：外框最深，内容层、分组面依次更亮；悬停与按下变深。没有更亮的余地时，分组面靠细边框和一道很淡的落影抬起。背景基色属于某个色调：明暗与当前色调相反的自定义背景会换成该色调的默认中性灰（暗 `#0F0F0F`、亮 `#F4F4F5`）。
+亮色调（默认）：冷白内容层（`#F6F8FB`）配轻雾外框（`#EEF1F5`），纯白分组面与浮层（`#FFFFFF`）靠极轻边框与柔和落影抬起；悬停与按下微加深。暗色调：深灰蓝内容层（`#111318`）与逐层提亮的分组面、浮层。背景基色属于某个色调：明暗与当前色调相反的自定义背景会换成该色调的默认中性色（亮 `#F6F8FB`、暗 `#111318`）。
 
 ## Typography
 

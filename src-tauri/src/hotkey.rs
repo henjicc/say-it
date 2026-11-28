@@ -21,8 +21,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
-    VK_SHIFT,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LMENU, VK_LWIN, VK_MENU,
+    VK_RMENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, HC_ACTION,
@@ -490,9 +490,18 @@ pub(crate) fn modifier_held() -> bool {
 }
 
 fn modifiers_match(mods: u8) -> bool {
+    modifiers_match_for_vk(mods, 0)
+}
+
+fn modifiers_match_for_vk(mods: u8, vk: u16) -> bool {
     let ctrl = key_down(VK_CONTROL.0);
     let shift = key_down(VK_SHIFT.0);
-    let alt = key_down(VK_MENU.0);
+    // 单独绑定右 Alt（VK_RMENU）时，按下它自身会让 VK_MENU 为真，只看左 Alt 才不会误判。
+    let alt = if vk == VK_RMENU.0 {
+        key_down(VK_LMENU.0)
+    } else {
+        key_down(VK_MENU.0)
+    };
     let win = key_down(VK_LWIN.0) || key_down(VK_RWIN.0);
     ((mods & MOD_CTRL != 0) == ctrl)
         && ((mods & MOD_SHIFT != 0) == shift)
@@ -670,7 +679,7 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 matched_lock_key = true;
                 suppressed_lock_key |= !press_hold;
             }
-            if is_down && modifiers_match(TARGET_MODS[slot].load(Ordering::SeqCst)) {
+            if is_down && modifiers_match_for_vk(TARGET_MODS[slot].load(Ordering::SeqCst), vk) {
                 if press_hold {
                     matching_press_hold = Some(slot);
                 } else {
@@ -853,6 +862,7 @@ pub fn code_to_vk(code: &str) -> Option<u16> {
     }
     let vk = match code {
         "CapsLock" => 0x14,
+        "AltRight" => VK_RMENU.0,
         "Space" => 0x20,
         "Enter" => 0x0D,
         "Tab" => 0x09,
@@ -892,6 +902,13 @@ mod tests {
     use super::*;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn code_to_vk_maps_onboarding_presets() {
+        assert_eq!(code_to_vk("CapsLock"), Some(0x14));
+        assert_eq!(code_to_vk("AltRight"), Some(VK_RMENU.0));
+        assert_eq!(code_to_vk("F8"), Some(0x77));
+    }
 
     #[test]
     fn multiple_bindings_replace_slots_and_advance_generation() {

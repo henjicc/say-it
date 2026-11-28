@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use tokio_util::sync::CancellationToken;
@@ -126,19 +126,40 @@ fn new_run(kind: &'static str) -> Run {
     }
 }
 
-static TRACES_DIR: OnceLock<PathBuf> = OnceLock::new();
+static TRACES_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 /// 读写追踪的入口都在开发者模式开启后才会走到，而开启前一定先 `initialize` 过。
 pub(crate) fn traces_dir() -> PathBuf {
     TRACES_DIR
-        .get()
-        .expect("开发者模式开启前已初始化追踪目录")
+        .read()
+        .expect("追踪目录状态锁已损坏")
         .clone()
+        .expect("开发者模式开启前已初始化追踪目录")
+}
+
+/// 首次引导原地切换数据根目录时，如已初始化过追踪目录则同步更新到新目录，
+/// 避免后续追踪写回已清理的旧根目录。
+pub(crate) fn rebind_data_root(next_root: &Path) -> Result<(), String> {
+    let mut slot = TRACES_DIR
+        .write()
+        .map_err(|_| "追踪目录状态锁已损坏".to_string())?;
+    if slot.is_none() {
+        return Ok(());
+    }
+    let directory = next_root.join("dev-traces");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("创建追踪目录失败：{error}"))?;
+    *slot = Some(directory);
+    Ok(())
 }
 
 /// 开发者模式开启时调用；同一进程里只做一次。
 pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
-    if TRACES_DIR.get().is_some() {
+    if TRACES_DIR
+        .read()
+        .map_err(|_| "追踪目录状态锁已损坏".to_string())?
+        .is_some()
+    {
         return Ok(());
     }
     let directory = crate::application::data_root::data_subdir(app, "dev-traces")?;
@@ -147,7 +168,13 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
     {
         eprintln!("[dev-trace] 清理旧追踪失败：{error}");
     }
-    let _ = TRACES_DIR.set(directory);
+    let mut slot = TRACES_DIR
+        .write()
+        .map_err(|_| "追踪目录状态锁已损坏".to_string())?;
+    if slot.is_none() {
+        *slot = Some(directory);
+    }
+    drop(slot);
     start_api(app.clone());
     Ok(())
 }

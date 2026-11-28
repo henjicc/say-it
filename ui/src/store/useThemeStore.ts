@@ -18,51 +18,51 @@ const THEME_KEY = "sayItAccentTheme";
 
 type Tone = AccentTheme["tone"];
 
-/** 每种色调的默认背景基色：中性灰，不染色。自定义背景不适合当前色调时也回落到这里。 */
+/** 每种色调的默认背景基色：亮色用清亮冷白，暗色用通透深灰蓝；自定义背景不适合当前色调时也回落到这里。 */
 const TONE_BACKGROUND: Record<Tone, string> = {
-  dark: "#0F0F0F",
-  light: "#F4F4F5",
+  light: "#F6F8FB",
+  dark: "#111318",
 };
 
 export const defaultAccentTheme: AccentTheme = {
-  tone: "dark",
-  accent: "#2767EA",
+  tone: "light",
+  accent: "#2563EB",
   backgroundMode: "custom",
-  background: TONE_BACKGROUND.dark,
+  background: TONE_BACKGROUND.light,
 };
 
 /** 只随色调变化、不随用户颜色变化的令牌。--color-fg-subtle 是需要阅读的文字的下限。 */
 const TONE_PALETTE: Record<Tone, Record<string, string>> = {
   dark: {
-    "--color-fg": "#ECEDEF",
-    "--color-fg-muted": "#B4B7BD",
-    "--color-fg-subtle": "#989CA4",
-    "--color-fg-faint": "#70747C",
-    "--color-ok": "#3FB27F",
-    "--color-err": "#E5726C",
-    "--color-warn": "#D9A441",
-    "--color-line": "rgba(255, 255, 255, 0.11)",
-    "--color-line-strong": "rgba(255, 255, 255, 0.18)",
-    "--color-scrim": "rgba(0, 0, 0, 0.7)",
+    "--color-fg": "#F1F5F9",
+    "--color-fg-muted": "#B4BDCC",
+    "--color-fg-subtle": "#94A3B8",
+    "--color-fg-faint": "#64748B",
+    "--color-ok": "#34D399",
+    "--color-err": "#F87171",
+    "--color-warn": "#FBBF24",
+    "--color-line": "rgba(255, 255, 255, 0.08)",
+    "--color-line-strong": "rgba(255, 255, 255, 0.15)",
+    "--color-scrim": "rgba(0, 0, 0, 0.65)",
     "--shadow-sm": "0 1px 2px rgba(0, 0, 0, 0.35)",
-    "--shadow-raise": "inset 0 1px 0 rgba(255, 255, 255, 0.035)",
-    "--shadow-popover": "0 18px 48px rgba(0, 0, 0, 0.55)",
+    "--shadow-raise": "0 4px 16px -8px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.035)",
+    "--shadow-popover": "0 16px 40px -8px rgba(0, 0, 0, 0.58)",
   },
   light: {
-    "--color-fg": "#111827",
-    "--color-fg-muted": "#434955",
-    "--color-fg-subtle": "#5B616D",
-    "--color-fg-faint": "#8D939E",
-    "--color-ok": "#16794A",
-    "--color-err": "#C2352E",
-    "--color-warn": "#8F5A00",
-    "--color-line": "rgba(17, 24, 39, 0.1)",
-    "--color-line-strong": "rgba(17, 24, 39, 0.18)",
-    "--color-scrim": "rgba(15, 23, 42, 0.32)",
-    "--shadow-sm": "0 1px 2px rgba(15, 23, 42, 0.08)",
-    // 亮色没有更亮的余地，分组面靠一道很淡的落影和细边框抬起。
-    "--shadow-raise": "0 1px 2px rgba(15, 23, 42, 0.05)",
-    "--shadow-popover": "0 12px 32px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.06)",
+    "--color-fg": "#0F172A",
+    "--color-fg-muted": "#475569",
+    "--color-fg-subtle": "#526074",
+    "--color-fg-faint": "#94A3B8",
+    "--color-ok": "#059669",
+    "--color-err": "#DC2626",
+    "--color-warn": "#D97706",
+    "--color-line": "rgba(15, 23, 42, 0.08)",
+    "--color-line-strong": "rgba(15, 23, 42, 0.14)",
+    "--color-scrim": "rgba(15, 23, 42, 0.28)",
+    "--shadow-sm": "0 1px 2px rgba(15, 23, 42, 0.04)",
+    // 亮色分组面用纯白浮卡 + 柔和轻影抬起，避免厚重灰框。
+    "--shadow-raise": "0 1px 2px rgba(15, 23, 42, 0.03), 0 6px 20px -10px rgba(15, 23, 42, 0.08)",
+    "--shadow-popover": "0 12px 32px -8px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.06)",
   },
 };
 
@@ -86,7 +86,7 @@ function normalizeHex(value: string, fallback: string) {
 }
 
 function normalizeTheme(theme: Partial<AccentTheme>): AccentTheme {
-  const tone: Tone = theme.tone === "light" ? "light" : "dark";
+  const tone: Tone = theme.tone === "dark" ? "dark" : "light";
   const background = normalizeHex(theme.background || "", TONE_BACKGROUND[tone]);
   return {
     tone,
@@ -233,22 +233,22 @@ interface ThemeLayers {
 function themeLayers(background: string, tone: Tone): ThemeLayers {
   if (tone === "light") {
     return {
-      frame: mix(background, "#000000", 0.045),
+      frame: mix(background, "#0F172A", 0.032),
       background,
-      overlay: mix(background, "#FFFFFF", 0.95),
-      surface: mix(background, "#FFFFFF", 0.9),
-      surfaceHover: mix(background, "#000000", 0.025),
-      surfaceStrong: mix(background, "#000000", 0.06),
+      overlay: mix(background, "#FFFFFF", 1),
+      surface: mix(background, "#FFFFFF", 0.98),
+      surfaceHover: mix(background, "#0F172A", 0.035),
+      surfaceStrong: mix(background, "#0F172A", 0.075),
     };
   }
   return {
-    frame: mix(background, "#000000", 0.22),
+    frame: mix(background, "#000000", 0.24),
     background,
     // 浮层要明显亮过分组面，叠在分组上的下拉和弹层才分得出来。
-    overlay: mix(background, "#FFFFFF", 0.13),
-    surface: mix(background, "#FFFFFF", 0.08),
-    surfaceHover: mix(background, "#FFFFFF", 0.11),
-    surfaceStrong: mix(background, "#FFFFFF", 0.15),
+    overlay: mix(background, "#FFFFFF", 0.1),
+    surface: mix(background, "#FFFFFF", 0.055),
+    surfaceHover: mix(background, "#FFFFFF", 0.085),
+    surfaceStrong: mix(background, "#FFFFFF", 0.13),
   };
 }
 

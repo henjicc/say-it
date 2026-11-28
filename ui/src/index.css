@@ -1,60 +1,60 @@
 @import "tailwindcss";
 
-/* ============ 设计令牌（深蓝黑桌面风格：分层背景 + 克制蓝色强调） ============
- * 暗色为主方向，取值对应参考图；运行时 App.tsx 会按当前主题覆写同名变量。
+/* ============ 设计令牌（清亮通透现代亮色体系：冷白底 + 纯白轻盈浮卡 + 品牌蓝） ============
+ * 亮色为主方向，暗色同样干净现代；运行时 App.tsx 会按当前主题覆写同名变量。
  * @theme 内为可生成 Tailwind 工具类的令牌；布局尺寸/层级等见其后的 :root。
  */
 @theme {
   /* 明度层级：外框（标题栏/导航）→ 内容层（中栏与检查器同色）→ 分组面 → 浮层 */
-  --color-bg: #0f0f0f;
-  --color-bg-sidebar: #0c0c0c;
-  --color-bg-titlebar: #0c0c0c;
-  --color-surface: #222222;
-  --color-surface-hover: #292929;
-  --color-surface-strong: #333333;
-  --color-overlay: #2c2c2c;
+  --color-bg: #f6f8fb;
+  --color-bg-sidebar: #eef1f5;
+  --color-bg-titlebar: #eef1f5;
+  --color-surface: #ffffff;
+  --color-surface-hover: #edf1f6;
+  --color-surface-strong: #e3e8f0;
+  --color-overlay: #ffffff;
 
   /* 边框/分割线 */
-  --color-line: rgba(255, 255, 255, 0.11);
-  --color-line-strong: rgba(255, 255, 255, 0.18);
+  --color-line: rgba(15, 23, 42, 0.08);
+  --color-line-strong: rgba(15, 23, 42, 0.14);
 
   /* 文字层级 */
-  --color-fg: #ecedef;
-  --color-fg-muted: #b4b7bd;
-  --color-fg-subtle: #989ca4;
-  --color-fg-faint: #70747c;
+  --color-fg: #0f172a;
+  --color-fg-muted: #475569;
+  --color-fg-subtle: #526074;
+  --color-fg-faint: #94a3b8;
 
   /* 状态色 */
-  --color-ok: #3fb27f;
-  --color-err: #e5726c;
-  --color-warn: #d9a441;
-  --color-rec: #ff4d4f;
+  --color-ok: #059669;
+  --color-err: #dc2626;
+  --color-warn: #d97706;
+  --color-rec: #ef4444;
 
   /* 品牌强调：accent 用于填充（进度、滑块、下划线），accent-control 用于带字的填充控件，
    * accent-text 用于强调色文字与图标，按色调保证 AA。运行时由 useThemeStore 推导覆写。 */
-  --color-accent: #2767ea;
-  --color-accent-light: #709bf1;
+  --color-accent: #2563eb;
+  --color-accent-light: #60a5fa;
   --color-accent-contrast: #ffffff;
-  --color-accent-control: #2767ea;
-  --color-accent-control-hover: #3470eb;
-  --color-accent-control-active: #235dd3;
+  --color-accent-control: #2563eb;
+  --color-accent-control-hover: #1d4ed8;
+  --color-accent-control-active: #1e40af;
   --color-accent-control-contrast: #ffffff;
-  --color-accent-text: #6b98f1;
+  --color-accent-text: #1d4ed8;
 
   /* 对话框背后的遮罩 */
-  --color-scrim: rgba(0, 0, 0, 0.7);
+  --color-scrim: rgba(15, 23, 42, 0.28);
 
   /* 圆角 */
   --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 10px;
-  --radius-xl: 12px;
+  --radius-md: 9px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
   --radius-pill: 9999px;
 
-  /* 阴影：raise 是抬起表面顶部的一道细高光，只用于内容层里的分组面与选中项 */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow-raise: inset 0 1px 0 rgba(255, 255, 255, 0.035);
-  --shadow-popover: 0 18px 48px rgba(0, 0, 0, 0.55);
+  /* 阴影：raise 是浮卡轻柔落影，popover 用于浮层与弹窗 */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-raise: 0 1px 2px rgba(15, 23, 42, 0.03), 0 6px 20px -10px rgba(15, 23, 42, 0.08);
+  --shadow-popover: 0 12px 32px -8px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.06);
 
   /* 动效 */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -75,14 +75,14 @@
 
 /* 布局尺寸、交互态与层级：不需要生成工具类，直接作为 CSS 变量使用 */
 :root {
-  --theme-bg: #131417;
-  --theme-bg-sidebar: #0e0f11;
-  --theme-bg-titlebar: #0e0f11;
-  --theme-overlay: #1e1f23;
-  --theme-surface: #1e1f23;
-  --theme-surface-hover: #24262a;
-  --theme-surface-strong: #2c2e33;
-  --system-glass-color: #101217;
+  --theme-bg: #f6f8fb;
+  --theme-bg-sidebar: #eef1f5;
+  --theme-bg-titlebar: #eef1f5;
+  --theme-overlay: #ffffff;
+  --theme-surface: #ffffff;
+  --theme-surface-hover: #edf1f6;
+  --theme-surface-strong: #e3e8f0;
+  --system-glass-color: #f8fafc;
   --system-glass-tint: 8%;
 
   --color-bg: var(--theme-bg);

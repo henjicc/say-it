@@ -55,18 +55,24 @@ fn normalized_orb_opacity(opacity: u8) -> u8 {
 
 #[cfg(any(windows, target_os = "macos", test))]
 fn theme_from_json(value: &serde_json::Value) -> Theme {
+    let tone = if value.get("tone").and_then(Value::as_str) == Some("dark") {
+        Tone::Dark
+    } else {
+        Tone::Light
+    };
+    let default_bg = if tone == Tone::Light {
+        [246, 248, 251]
+    } else {
+        [17, 19, 24]
+    };
     Theme {
-        tone: if value.get("tone").and_then(Value::as_str) == Some("light") {
-            Tone::Light
-        } else {
-            Tone::Dark
-        },
+        tone,
         accent: Theme::parse_hex_rgb(value.get("accent").and_then(Value::as_str))
             .unwrap_or(Theme::DEFAULT.accent),
         custom_background: (value.get("backgroundMode").and_then(Value::as_str) == Some("custom"))
             .then(|| {
                 Theme::parse_hex_rgb(value.get("background").and_then(Value::as_str))
-                    .unwrap_or([15, 15, 15])
+                    .unwrap_or(default_bg)
             }),
     }
 }
@@ -77,7 +83,7 @@ fn current_theme_glass_tint_rgb(app: &tauri::AppHandle) -> (u8, u8, u8) {
         .app_settings
         .lock()
         .map(|settings| theme_from_json(&settings.theme).glass_tint_rgb())
-        .unwrap_or([15, 15, 15])
+        .unwrap_or_else(|_| Theme::DEFAULT.glass_tint_rgb())
         .into()
 }
 
@@ -180,17 +186,26 @@ fn css_native_look(theme: Theme, settings: &FloatingOrbSettings) -> Look {
 }
 
 pub(crate) fn native_look(app: &tauri::AppHandle) -> Look {
+    #[cfg(any(windows, target_os = "macos"))]
+    let theme = app
+        .state::<RuntimeState>()
+        .app_settings
+        .lock()
+        .map(|settings| theme_from_json(&settings.theme))
+        .unwrap_or(Theme::DEFAULT);
     #[cfg(target_os = "macos")]
     {
-        let theme = app
-            .state::<RuntimeState>()
-            .app_settings
-            .lock()
-            .map(|settings| theme_from_json(&settings.theme))
-            .unwrap_or(Theme::DEFAULT);
         css_native_look(theme, &current_settings(app))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        Look {
+            profile: sayit_overlay_core::look::Profile::WindowsLegacy,
+            theme,
+            glass: None,
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
         Look::WINDOWS_LEGACY
@@ -1425,10 +1440,10 @@ fn ensure_floating_orb_menu_window(app: &tauri::AppHandle) -> Result<tauri::Webv
 }
 
 fn window_theme(value: &serde_json::Value) -> tauri::Theme {
-    if value.get("tone").and_then(serde_json::Value::as_str) == Some("light") {
-        tauri::Theme::Light
-    } else {
+    if value.get("tone").and_then(serde_json::Value::as_str) == Some("dark") {
         tauri::Theme::Dark
+    } else {
+        tauri::Theme::Light
     }
 }
 
@@ -1437,7 +1452,7 @@ fn current_window_theme(app: &tauri::AppHandle) -> tauri::Theme {
         .app_settings
         .lock()
         .map(|settings| window_theme(&settings.theme))
-        .unwrap_or(tauri::Theme::Dark)
+        .unwrap_or(tauri::Theme::Light)
 }
 
 pub(crate) fn sync_floating_orb_theme(app: &tauri::AppHandle, value: &serde_json::Value) {
@@ -2626,7 +2641,7 @@ mod tests {
                     "accent": value, "backgroundMode": "custom", "background": value
                 })),
                 Theme {
-                    custom_background: Some([15, 15, 15]),
+                    custom_background: Some([246, 248, 251]),
                     ..Theme::DEFAULT
                 },
                 "{value:?}"
@@ -2645,17 +2660,28 @@ mod tests {
         );
         assert_eq!(
             theme_from_json(&serde_json::json!({
+                "tone": "dark", "accent": "invalid",
+                "backgroundMode": "custom", "background": "bad"
+            })),
+            Theme {
+                tone: Tone::Dark,
+                custom_background: Some([17, 19, 24]),
+                ..Theme::DEFAULT
+            }
+        );
+        assert_eq!(
+            theme_from_json(&serde_json::json!({
                 "tone": "unknown", "accent": false,
                 "backgroundMode": "custom", "background": "bad"
             })),
             Theme {
-                custom_background: Some([15, 15, 15]),
+                custom_background: Some([246, 248, 251]),
                 ..Theme::DEFAULT
             }
         );
     }
 
-    // 冻结 Windows Acrylic 的迁移前实现，独立对照 JSON 解析、默认值与浮点运算顺序。
+    // 独立对照 JSON 解析、默认值与混合浮点运算顺序。
     fn legacy_theme_colors(value: &Value) -> ([u8; 3], [u8; 3]) {
         fn parse(value: Option<&str>) -> Option<(u8, u8, u8)> {
             let value = value?.trim();
@@ -2674,11 +2700,15 @@ mod tests {
                 |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * amount).round() as u8;
             (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
         }
-        let accent = parse(value.get("accent").and_then(Value::as_str)).unwrap_or((39, 103, 234));
-        let light = value.get("tone").and_then(Value::as_str) == Some("light");
+        let accent = parse(value.get("accent").and_then(Value::as_str)).unwrap_or((37, 99, 235));
+        let light = value.get("tone").and_then(Value::as_str) != Some("dark");
         let custom = value.get("backgroundMode").and_then(Value::as_str) == Some("custom");
         let background = if custom {
-            parse(value.get("background").and_then(Value::as_str)).unwrap_or((15, 15, 15))
+            parse(value.get("background").and_then(Value::as_str)).unwrap_or(if light {
+                (246, 248, 251)
+            } else {
+                (17, 19, 24)
+            })
         } else {
             mix(
                 accent,

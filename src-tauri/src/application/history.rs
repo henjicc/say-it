@@ -1282,7 +1282,7 @@ pub(crate) fn pause_for_data_root_migration(app: &AppHandle) -> Result<(), Strin
         .map_err(|error| format!("迁移前整理历史数据库失败：{error}"))
 }
 
-pub(crate) fn resume_after_failed_data_root_migration() {
+pub(crate) fn resume_after_data_root_migration() {
     WRITES_PAUSED.store(false, Ordering::Release);
 }
 

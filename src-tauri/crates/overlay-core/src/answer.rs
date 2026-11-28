@@ -10,7 +10,7 @@ use crate::canvas::{
 };
 use crate::geom::{Color, Point, PxRect, Rect, Shape, Stroke, Transform};
 use crate::indicator::wave_scale;
-use crate::look::{Look, Profile};
+use crate::look::{Look, Profile, Tone};
 use crate::ui::gesture::ClickCounter;
 use crate::ui::rich_text::{RichText, RichTheme};
 use crate::ui::scroll::Scroll;
@@ -273,19 +273,88 @@ const SMALL_LINE: f32 = 20.0;
 const CAPTION_SIZE: f32 = 12.0;
 const CAPTION_LINE: f32 = 18.0;
 
-/// 深色工作台配色（与主窗口令牌一致）。
-mod palette {
-    pub const PANEL: (f32, f32, f32) = (38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0);
-    pub const FG: (f32, f32, f32) = (236.0 / 255.0, 237.0 / 255.0, 239.0 / 255.0);
-    pub const MUTED: (f32, f32, f32) = (180.0 / 255.0, 183.0 / 255.0, 189.0 / 255.0);
-    pub const SUBTLE: (f32, f32, f32) = (152.0 / 255.0, 156.0 / 255.0, 164.0 / 255.0);
-    pub const FAINT: (f32, f32, f32) = (112.0 / 255.0, 116.0 / 255.0, 124.0 / 255.0);
-    pub const SURFACE: (f32, f32, f32) = (51.0 / 255.0, 51.0 / 255.0, 51.0 / 255.0);
-    pub const WELL: (f32, f32, f32) = (26.0 / 255.0, 26.0 / 255.0, 26.0 / 255.0);
-    pub const ACCENT: (f32, f32, f32) = (39.0 / 255.0, 103.0 / 255.0, 234.0 / 255.0);
-    pub const ACCENT_TEXT: (f32, f32, f32) = (107.0 / 255.0, 152.0 / 255.0, 241.0 / 255.0);
-    pub const ERR: (f32, f32, f32) = (229.0 / 255.0, 114.0 / 255.0, 108.0 / 255.0);
-    pub const WHITE: (f32, f32, f32) = (1.0, 1.0, 1.0);
+/// 随主窗口色调切换的回答窗配色。
+struct Palette {
+    panel: (f32, f32, f32),
+    border: (f32, f32, f32),
+    border_alpha: f32,
+    line: (f32, f32, f32),
+    line_alpha: f32,
+    header_fill: (f32, f32, f32),
+    header_fill_alpha: f32,
+    backdrop: (f32, f32, f32),
+    fg: (f32, f32, f32),
+    muted: (f32, f32, f32),
+    subtle: (f32, f32, f32),
+    faint: (f32, f32, f32),
+    surface: (f32, f32, f32),
+    well: (f32, f32, f32),
+    accent: (f32, f32, f32),
+    accent_hover: (f32, f32, f32),
+    accent_press: (f32, f32, f32),
+    accent_text: (f32, f32, f32),
+    err: (f32, f32, f32),
+    white: (f32, f32, f32),
+}
+
+impl Palette {
+    fn for_look(look: &Look) -> Self {
+        let [ar, ag, ab] = look.theme.accent;
+        let accent = (f32::from(ar) / 255.0, f32::from(ag) / 255.0, f32::from(ab) / 255.0);
+        let accent_hover = (
+            (accent.0 + (1.0 - accent.0) * 0.08).min(1.0),
+            (accent.1 + (1.0 - accent.1) * 0.08).min(1.0),
+            (accent.2 + (1.0 - accent.2) * 0.08).min(1.0),
+        );
+        let accent_press = (accent.0 * 0.88, accent.1 * 0.88, accent.2 * 0.88);
+        if look.theme.tone == Tone::Light {
+            Self {
+                panel: (1.0, 1.0, 1.0),
+                border: (15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0),
+                border_alpha: 0.14,
+                line: (15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0),
+                line_alpha: 0.09,
+                header_fill: (15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0),
+                header_fill_alpha: 0.04,
+                backdrop: (15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0),
+                fg: (15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0),
+                muted: (71.0 / 255.0, 85.0 / 255.0, 105.0 / 255.0),
+                subtle: (82.0 / 255.0, 96.0 / 255.0, 116.0 / 255.0),
+                faint: (148.0 / 255.0, 163.0 / 255.0, 184.0 / 255.0),
+                surface: (241.0 / 255.0, 245.0 / 255.0, 249.0 / 255.0),
+                well: (246.0 / 255.0, 248.0 / 255.0, 251.0 / 255.0),
+                accent,
+                accent_hover,
+                accent_press,
+                accent_text: accent,
+                err: (220.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0),
+                white: (1.0, 1.0, 1.0),
+            }
+        } else {
+            Self {
+                panel: (24.0 / 255.0, 27.0 / 255.0, 34.0 / 255.0),
+                border: (1.0, 1.0, 1.0),
+                border_alpha: 0.16,
+                line: (1.0, 1.0, 1.0),
+                line_alpha: 0.10,
+                header_fill: (1.0, 1.0, 1.0),
+                header_fill_alpha: 0.05,
+                backdrop: (1.0, 1.0, 1.0),
+                fg: (241.0 / 255.0, 245.0 / 255.0, 249.0 / 255.0),
+                muted: (180.0 / 255.0, 189.0 / 255.0, 204.0 / 255.0),
+                subtle: (148.0 / 255.0, 163.0 / 255.0, 184.0 / 255.0),
+                faint: (100.0 / 255.0, 116.0 / 255.0, 139.0 / 255.0),
+                surface: (34.0 / 255.0, 38.0 / 255.0, 48.0 / 255.0),
+                well: (17.0 / 255.0, 19.0 / 255.0, 24.0 / 255.0),
+                accent,
+                accent_hover,
+                accent_press,
+                accent_text: (96.0 / 255.0, 165.0 / 255.0, 250.0 / 255.0),
+                err: (248.0 / 255.0, 113.0 / 255.0, 113.0 / 255.0),
+                white: (1.0, 1.0, 1.0),
+            }
+        }
+    }
 }
 
 fn center(rect: Rect) -> Point {
@@ -373,18 +442,23 @@ impl<L: Clone> Answer<L> {
         (self.x, self.y) = pointer;
     }
 
+    fn palette(&self) -> Palette {
+        Palette::for_look(&self.look)
+    }
+
     fn rich_theme(&self, dim: f32) -> RichTheme {
+        let palette = self.palette();
         RichTheme {
             size: BODY_SIZE,
             line_height: BODY_LINE,
-            text: self.color(palette::FG, dim),
-            muted: self.color(palette::MUTED, dim),
-            link: self.color(palette::ACCENT_TEXT, dim),
-            code_fill: self.color(palette::WELL, dim),
-            line: self.color(palette::WHITE, 0.11 * dim),
-            quote_bar: self.color(palette::ACCENT, dim),
-            header_fill: self.color(palette::WHITE, 0.05 * dim),
-            selection: self.color(palette::ACCENT, 0.38),
+            text: self.color(palette.fg, dim),
+            muted: self.color(palette.muted, dim),
+            link: self.color(palette.accent_text, dim),
+            code_fill: self.color(palette.well, dim),
+            line: self.color(palette.line, palette.line_alpha * dim),
+            quote_bar: self.color(palette.accent, dim),
+            header_fill: self.color(palette.header_fill, palette.header_fill_alpha * dim),
+            selection: self.color(palette.accent, 0.3),
         }
     }
     fn placeholder(&self) -> String {
@@ -613,20 +687,22 @@ impl<L: Clone> Answer<L> {
         rect: Rect,
         active: bool,
     ) {
+        let palette = self.palette();
+        let light = self.look.theme.tone == Tone::Light;
         let backdrop = match (self.pressed == Some(id), self.hover == Some(id)) {
-            (true, _) => Some(0.14),
-            (false, true) => Some(0.08),
+            (true, _) => Some(if light { 0.1 } else { 0.14 }),
+            (false, true) => Some(if light { 0.05 } else { 0.08 }),
             _ => None,
         };
         if let Some(alpha) = backdrop {
-            canvas.fill_rounded_rect(rect, 6.0, self.color(palette::WHITE, alpha));
+            canvas.fill_rounded_rect(rect, 6.0, self.color(palette.backdrop, alpha));
         }
         let color = if active {
-            self.color(palette::ACCENT_TEXT, 1.0)
+            self.color(palette.accent_text, 1.0)
         } else if self.hover == Some(id) {
-            self.color(palette::FG, 1.0)
+            self.color(palette.fg, 1.0)
         } else {
-            self.color(palette::SUBTLE, 1.0)
+            self.color(palette.subtle, 1.0)
         };
         self.draw_icon(canvas, icon, rect, color);
     }
@@ -634,6 +710,7 @@ impl<L: Clone> Answer<L> {
     where
         C::Text: TextEngine<Layout = L>,
     {
+        let palette = self.palette();
         let dim = if self.voice.is_some() { 0.45 } else { 1.0 };
         let theme = self.rich_theme(dim);
         let origin = Point::new(PAD_X, self.body.top - self.scroll.offset());
@@ -651,7 +728,10 @@ impl<L: Clone> Answer<L> {
             canvas.stroke_rounded_rect(
                 Rect::new(r.left + 0.5, r.top + 0.5, r.right - 0.5, r.bottom - 0.5),
                 8.0,
-                self.color(palette::WHITE, if hovered { 0.18 } else { 0.11 } * dim),
+                self.color(
+                    palette.line,
+                    if hovered { palette.border_alpha } else { palette.line_alpha } * dim,
+                ),
                 Stroke::plain(1.0),
             );
             let chevron = if self.earlier_open {
@@ -666,7 +746,7 @@ impl<L: Clone> Answer<L> {
                 dx: center(icon).x - 7.0,
                 dy: center(icon).y - 7.0,
             });
-            canvas.stroke_icon(chevron, self.color(palette::SUBTLE, dim), Stroke::round(2.0));
+            canvas.stroke_icon(chevron, self.color(palette.subtle, dim), Stroke::round(2.0));
             canvas.restore();
             let summary = self
                 .view
@@ -680,17 +760,17 @@ impl<L: Clone> Answer<L> {
                 &label,
                 &paint::label_style(CAPTION_SIZE, 400),
                 Rect::new(r.left + 30.0, r.top, r.right - 10.0, r.bottom),
-                self.color(palette::SUBTLE, dim),
+                self.color(palette.subtle, dim),
             );
         }
         let draw_bubble = |canvas: &mut C, rect: Rect, layout: &Option<L>| {
             let r = at(rect);
-            canvas.fill_rounded_rect(r, 8.0, self.color(palette::SURFACE, dim));
+            canvas.fill_rounded_rect(r, 8.0, self.color(palette.surface, dim));
             if let Some(layout) = layout {
                 canvas.draw_text(
                     layout,
                     Point::new(r.left + 12.0, r.top + 6.0),
-                    self.color(palette::FG, dim),
+                    self.color(palette.fg, dim),
                     None,
                 );
             }
@@ -720,7 +800,7 @@ impl<L: Clone> Answer<L> {
                 dx: r.left,
                 dy: center(r).y - 7.0,
             });
-            canvas.stroke_icon(chevron, self.color(palette::SUBTLE, dim), Stroke::round(2.0));
+            canvas.stroke_icon(chevron, self.color(palette.subtle, dim), Stroke::round(2.0));
             canvas.restore();
             let label = if self.view.streaming && self.view.text.is_empty() {
                 "思考中…"
@@ -728,9 +808,9 @@ impl<L: Clone> Answer<L> {
                 "思考过程"
             };
             let color = if self.hover == Some(ID_REASONING) {
-                palette::MUTED
+                palette.muted
             } else {
-                palette::SUBTLE
+                palette.subtle
             };
             paint::label(
                 canvas,
@@ -744,7 +824,7 @@ impl<L: Clone> Answer<L> {
             canvas.draw_text(
                 layout,
                 Point::new(origin.x, origin.y + top),
-                self.color(palette::SUBTLE, dim),
+                self.color(palette.subtle, dim),
                 None,
             );
         }
@@ -756,7 +836,7 @@ impl<L: Clone> Answer<L> {
             &theme,
         );
         if let Some((layout, top, error)) = &content.status {
-            let rgb = if *error { palette::ERR } else { palette::SUBTLE };
+            let rgb = if *error { palette.err } else { palette.subtle };
             canvas.draw_text(
                 layout,
                 Point::new(origin.x, origin.y + top),
@@ -767,11 +847,11 @@ impl<L: Clone> Answer<L> {
         if content.insert.shown {
             let r = at(content.insert.rect);
             let fill = if self.pressed == Some(ID_INSERT) {
-                (35.0 / 255.0, 93.0 / 255.0, 211.0 / 255.0)
+                palette.accent_press
             } else if self.hover == Some(ID_INSERT) {
-                (52.0 / 255.0, 112.0 / 255.0, 235.0 / 255.0)
+                palette.accent_hover
             } else {
-                palette::ACCENT
+                palette.accent
             };
             canvas.fill_rounded_rect(r, 6.0, self.color(fill, dim));
             let icon = Rect::new(r.left + 6.0, r.top, r.left + 26.0, r.bottom);
@@ -781,14 +861,14 @@ impl<L: Clone> Answer<L> {
                 dx: center(icon).x - 7.5,
                 dy: center(icon).y - 7.5,
             });
-            canvas.stroke_icon(&INSERT_ICON, self.color(palette::WHITE, dim), Stroke::round(2.0));
+            canvas.stroke_icon(&INSERT_ICON, self.color(palette.white, dim), Stroke::round(2.0));
             canvas.restore();
             paint::label(
                 canvas,
                 "插入",
                 &paint::label_style(SMALL_SIZE, 400),
                 Rect::new(r.left + 28.0, r.top, r.right, r.bottom),
-                self.color(palette::WHITE, dim),
+                self.color(palette.white, dim),
             );
         }
         if content.copy.shown {
@@ -806,20 +886,21 @@ impl<L: Clone> Answer<L> {
         }
         canvas.restore();
         self.scroll
-            .draw(canvas, self.body, self.color(palette::WHITE, 0.18));
+            .draw(canvas, self.body, self.color(palette.border, palette.border_alpha));
     }
     fn draw_composer<C: Canvas>(&self, canvas: &mut C)
     where
         C::Text: TextEngine<Layout = L>,
     {
+        let palette = self.palette();
         let r = self.composer;
         if let Some((text, hotkey)) = &self.voice {
             let hovered = self.hover == Some(ID_STRIP);
-            canvas.fill_rounded_rect(r, 10.0, self.color(palette::ACCENT, 0.14));
+            canvas.fill_rounded_rect(r, 10.0, self.color(palette.accent, 0.12));
             canvas.stroke_rounded_rect(
                 Rect::new(r.left + 0.5, r.top + 0.5, r.right - 0.5, r.bottom - 0.5),
                 10.0,
-                self.color(palette::ACCENT, if hovered { 0.8 } else { 0.55 }),
+                self.color(palette.accent, if hovered { 0.8 } else { 0.55 }),
                 Stroke::plain(1.0),
             );
             let wave_top = r.top + 12.0;
@@ -838,7 +919,7 @@ impl<L: Clone> Answer<L> {
                 canvas.fill_rounded_rect(
                     Rect::new(x, y, x + bar, y + h),
                     1.5,
-                    self.color(palette::ACCENT_TEXT, 1.0),
+                    self.color(palette.accent_text, 1.0),
                 );
                 x += bar + gap;
             }
@@ -850,7 +931,7 @@ impl<L: Clone> Answer<L> {
                 canvas.draw_text(
                     &layout,
                     Point::new(r.left + 12.0, r.top + 44.0),
-                    self.color(if text.is_empty() { palette::SUBTLE } else { palette::FG }, 1.0),
+                    self.color(if text.is_empty() { palette.subtle } else { palette.fg }, 1.0),
                     None,
                 );
             }
@@ -865,19 +946,26 @@ impl<L: Clone> Answer<L> {
                 &hint,
                 &caption,
                 Rect::new(r.left, r.bottom - 26.0, r.right, r.bottom - 8.0),
-                self.color(palette::SUBTLE, 1.0),
+                self.color(palette.subtle, 1.0),
             );
             return;
         }
         if !self.view.can_follow_up {
             return;
         }
-        canvas.fill_rounded_rect(r, 8.0, self.color(palette::WELL, 1.0));
+        canvas.fill_rounded_rect(r, 8.0, self.color(palette.well, 1.0));
         if self.focused && self.area == Area::Field {
             canvas.stroke_rounded_rect(
                 Rect::new(r.left + 0.5, r.top + 0.5, r.right - 0.5, r.bottom - 0.5),
                 8.0,
-                self.color(palette::ACCENT, 0.55),
+                self.color(palette.accent, 0.55),
+                Stroke::plain(1.0),
+            );
+        } else {
+            canvas.stroke_rounded_rect(
+                Rect::new(r.left + 0.5, r.top + 0.5, r.right - 0.5, r.bottom - 0.5),
+                8.0,
+                self.color(palette.line, palette.line_alpha),
                 Stroke::plain(1.0),
             );
         }
@@ -887,25 +975,25 @@ impl<L: Clone> Answer<L> {
             &self.placeholder(),
             &style(SMALL_SIZE, SMALL_LINE, 400),
             &FieldColors {
-                text: self.color(palette::FG, 1.0),
-                placeholder: self.color(palette::FAINT, 1.0),
-                caret: self.color(palette::FG, 1.0),
-                selection: self.color(palette::ACCENT, 0.38),
+                text: self.color(palette.fg, 1.0),
+                placeholder: self.color(palette.faint, 1.0),
+                caret: self.color(palette.fg, 1.0),
+                selection: self.color(palette.accent, 0.3),
             },
             self.focused && self.area == Area::Field,
         );
         let button = self.send_button();
         if self.send_shown() {
             let fill = if self.can_send() {
-                palette::ACCENT
+                palette.accent
             } else {
-                palette::SURFACE
+                palette.surface
             };
             canvas.fill_rounded_rect(button, 6.0, self.color(fill, 1.0));
             let color = if self.can_send() {
-                palette::WHITE
+                palette.white
             } else {
-                palette::FAINT
+                palette.faint
             };
             self.draw_icon(canvas, &SEND_ICON, button, self.color(color, 1.0));
         } else {
@@ -1197,12 +1285,13 @@ where
         })
     }
     fn draw<C: Canvas<Text = T>>(&self, canvas: &mut C, _: Instant) {
+        let palette = self.palette();
         let panel = Rect::new(0.0, 0.0, WIDTH, self.height);
-        canvas.fill_rounded_rect(panel, RADIUS, self.color(palette::PANEL, 1.0));
+        canvas.fill_rounded_rect(panel, RADIUS, self.color(palette.panel, 1.0));
         canvas.stroke_rounded_rect(
             Rect::new(0.5, 0.5, WIDTH - 0.5, self.height - 0.5),
             RADIUS - 0.5,
-            self.color(palette::WHITE, 0.18),
+            self.color(palette.border, palette.border_alpha),
             Stroke::plain(1.0),
         );
         paint::label(
@@ -1210,7 +1299,7 @@ where
             &self.view.label,
             &paint::label_style(CAPTION_SIZE, 400),
             Rect::new(16.0, 0.0, WIDTH - 80.0, HEADER),
-            self.color(palette::ACCENT_TEXT, 1.0),
+            self.color(palette.accent_text, 1.0),
         );
         let (pin, close) = header_buttons();
         self.icon_button(canvas, ID_PIN, &PIN_ICON, pin, self.view.pinned);

@@ -6,7 +6,7 @@
 use crate::anim::Transition;
 use crate::canvas::{Canvas, FontFamily, ParagraphAlign, SvgIcon, TextAlign, TextEngine, TextStyle};
 use crate::geom::{Color, Point, PxRect, Rect, Shape, Stroke, Transform};
-use crate::look::{Look, Profile};
+use crate::look::{Look, Profile, Tone};
 use crate::ui::{paint, HitKind, HitMap, UiInput, UiPointer};
 use crate::window::*;
 use std::time::Instant;
@@ -183,18 +183,70 @@ fn rows() -> Rows {
     }
 }
 
-/// 深色工作台配色（与主窗口令牌一致）。
-mod palette {
-    pub const PANEL: (f32, f32, f32) = (38.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0);
-    pub const FG: (f32, f32, f32) = (236.0 / 255.0, 237.0 / 255.0, 239.0 / 255.0);
-    pub const MUTED: (f32, f32, f32) = (180.0 / 255.0, 183.0 / 255.0, 189.0 / 255.0);
-    pub const SUBTLE: (f32, f32, f32) = (152.0 / 255.0, 156.0 / 255.0, 164.0 / 255.0);
-    pub const TRACK: (f32, f32, f32) = (58.0 / 255.0, 58.0 / 255.0, 58.0 / 255.0);
-    pub const SWITCH_OFF: (f32, f32, f32) = (74.0 / 255.0, 74.0 / 255.0, 74.0 / 255.0);
-    pub const ACCENT: (f32, f32, f32) = (39.0 / 255.0, 103.0 / 255.0, 234.0 / 255.0);
-    pub const ACCENT_TEXT: (f32, f32, f32) = (107.0 / 255.0, 152.0 / 255.0, 241.0 / 255.0);
-    pub const ERR: (f32, f32, f32) = (229.0 / 255.0, 114.0 / 255.0, 108.0 / 255.0);
-    pub const WHITE: (f32, f32, f32) = (1.0, 1.0, 1.0);
+/// 随主窗口色调切换的悬浮球设置面板配色。
+struct Palette {
+    panel: (f32, f32, f32),
+    border: (f32, f32, f32),
+    border_alpha: f32,
+    line: (f32, f32, f32),
+    line_alpha: f32,
+    backdrop: (f32, f32, f32),
+    fg: (f32, f32, f32),
+    muted: (f32, f32, f32),
+    subtle: (f32, f32, f32),
+    track: (f32, f32, f32),
+    switch_off: (f32, f32, f32),
+    thumb: (f32, f32, f32),
+    accent: (f32, f32, f32),
+    accent_text: (f32, f32, f32),
+    err: (f32, f32, f32),
+    white: (f32, f32, f32),
+}
+
+impl Palette {
+    fn for_look(look: &Look) -> Self {
+        let [ar, ag, ab] = look.theme.accent;
+        let accent = (f32::from(ar) / 255.0, f32::from(ag) / 255.0, f32::from(ab) / 255.0);
+        if look.theme.tone == Tone::Light {
+            Self {
+                panel: (1.0, 1.0, 1.0),
+                border: (15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0),
+                border_alpha: 0.14,
+                line: (15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0),
+                line_alpha: 0.08,
+                backdrop: (15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0),
+                fg: (15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0),
+                muted: (71.0 / 255.0, 85.0 / 255.0, 105.0 / 255.0),
+                subtle: (100.0 / 255.0, 116.0 / 255.0, 139.0 / 255.0),
+                track: (226.0 / 255.0, 232.0 / 255.0, 240.0 / 255.0),
+                switch_off: (203.0 / 255.0, 213.0 / 255.0, 225.0 / 255.0),
+                thumb: accent,
+                accent,
+                accent_text: accent,
+                err: (220.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0),
+                white: (1.0, 1.0, 1.0),
+            }
+        } else {
+            Self {
+                panel: (24.0 / 255.0, 27.0 / 255.0, 34.0 / 255.0),
+                border: (1.0, 1.0, 1.0),
+                border_alpha: 0.16,
+                line: (1.0, 1.0, 1.0),
+                line_alpha: 0.09,
+                backdrop: (1.0, 1.0, 1.0),
+                fg: (241.0 / 255.0, 245.0 / 255.0, 249.0 / 255.0),
+                muted: (180.0 / 255.0, 189.0 / 255.0, 204.0 / 255.0),
+                subtle: (148.0 / 255.0, 163.0 / 255.0, 184.0 / 255.0),
+                track: (51.0 / 255.0, 58.0 / 255.0, 72.0 / 255.0),
+                switch_off: (71.0 / 255.0, 80.0 / 255.0, 96.0 / 255.0),
+                thumb: (241.0 / 255.0, 245.0 / 255.0, 249.0 / 255.0),
+                accent,
+                accent_text: (96.0 / 255.0, 165.0 / 255.0, 250.0 / 255.0),
+                err: (248.0 / 255.0, 113.0 / 255.0, 113.0 / 255.0),
+                white: (1.0, 1.0, 1.0),
+            }
+        }
+    }
 }
 
 fn text_style(size: f32, weight: u16, wrap: bool) -> TextStyle<'static> {
@@ -412,13 +464,17 @@ impl OrbMenu {
         canvas.stroke_icon(icon, color, Stroke::round(2.0));
         canvas.restore();
     }
+    fn palette(&self) -> Palette {
+        Palette::for_look(&self.look)
+    }
     fn backdrop<C: Canvas>(&self, canvas: &mut C, id: u16, rect: Rect) {
+        let light = self.look.theme.tone == Tone::Light;
         let alpha = match (self.pressed == Some(id), self.hover == Some(id)) {
-            (true, _) => 0.14,
-            (false, true) => 0.08,
+            (true, _) => if light { 0.1 } else { 0.14 },
+            (false, true) => if light { 0.05 } else { 0.08 },
             _ => return,
         };
-        canvas.fill_rounded_rect(rect, 8.0, self.color(palette::WHITE, alpha));
+        canvas.fill_rounded_rect(rect, 8.0, self.color(self.palette().backdrop, alpha));
     }
     /// 在 rect 内靠右画一行文字。
     fn trailing_label<C: Canvas>(canvas: &mut C, text: &str, style: &TextStyle<'_>, rect: Rect, color: Color) {
@@ -430,20 +486,22 @@ impl OrbMenu {
         canvas.draw_text(&layout, Point::new(rect.right - width, rect.top), color, None);
     }
     fn draw_slider<C: Canvas>(&self, canvas: &mut C, slider: Slider, label: Rect, name: &str, value: &str) {
-        paint::label(canvas, name, &text_style(12.0, 400, false), label, self.color(palette::MUTED, 1.0));
-        Self::trailing_label(canvas, value, &text_style(12.0, 400, false), label, self.color(palette::SUBTLE, 1.0));
+        let palette = self.palette();
+        paint::label(canvas, name, &text_style(12.0, 400, false), label, self.color(palette.muted, 1.0));
+        Self::trailing_label(canvas, value, &text_style(12.0, 400, false), label, self.color(palette.subtle, 1.0));
         let rect = Self::slider_rect(slider);
         let (left, right) = Self::track(slider);
         let cy = (rect.top + rect.bottom) / 2.0;
         let x = left + (right - left) * self.fraction(slider);
         let track = Rect::new(rect.left, cy - TRACK_H / 2.0, rect.right, cy + TRACK_H / 2.0);
-        canvas.fill_rounded_rect(track, TRACK_H / 2.0, self.color(palette::TRACK, 1.0));
+        canvas.fill_rounded_rect(track, TRACK_H / 2.0, self.color(palette.track, 1.0));
         let filled = Rect::new(track.left, track.top, x.max(track.left + TRACK_H), track.bottom);
-        canvas.fill_rounded_rect(filled, TRACK_H / 2.0, self.color(palette::ACCENT, 1.0));
+        canvas.fill_rounded_rect(filled, TRACK_H / 2.0, self.color(palette.accent, 1.0));
         let radius = if self.dragging == Some(slider) { THUMB / 2.0 + 1.0 } else { THUMB / 2.0 };
-        canvas.fill_circle(Point::new(x, cy), radius, self.color(palette::FG, 1.0));
+        canvas.fill_circle(Point::new(x, cy), radius, self.color(palette.thumb, 1.0));
     }
     fn draw_toggle<C: Canvas>(&self, canvas: &mut C, rect: Rect) {
+        let palette = self.palette();
         let text = Rect::new(rect.left, rect.top, rect.right - SWITCH_W - 10.0, rect.bottom);
         let mid = (rect.top + rect.bottom) / 2.0;
         paint::label(
@@ -451,14 +509,14 @@ impl OrbMenu {
             "自动回车",
             &text_style(13.0, 400, false),
             Rect::new(text.left, rect.top, text.right, mid + 1.0),
-            self.color(palette::FG, 1.0),
+            self.color(palette.fg, 1.0),
         );
         paint::label(
             canvas,
             "识别完成后自动发送",
             &text_style(11.0, 400, false),
             Rect::new(text.left, mid + 1.0, text.right, rect.bottom),
-            self.color(palette::SUBTLE, 1.0),
+            self.color(palette.subtle, 1.0),
         );
         let on = self.view.auto_enter;
         let track = Rect::new(
@@ -467,19 +525,20 @@ impl OrbMenu {
             rect.right,
             mid + SWITCH_H / 2.0,
         );
-        let fill = if on { palette::ACCENT } else { palette::SWITCH_OFF };
+        let fill = if on { palette.accent } else { palette.switch_off };
         canvas.fill_rounded_rect(track, SWITCH_H / 2.0, self.color(fill, 1.0));
         let knob_x = if on { track.right - SWITCH_H / 2.0 } else { track.left + SWITCH_H / 2.0 };
-        canvas.fill_circle(Point::new(knob_x, mid), SWITCH_H / 2.0 - 2.0, self.color(palette::WHITE, 1.0));
+        canvas.fill_circle(Point::new(knob_x, mid), SWITCH_H / 2.0 - 2.0, self.color(palette.white, 1.0));
     }
     fn draw_action<C: Canvas>(&self, canvas: &mut C, id: u16, rect: Rect, icon: &SvgIcon, text: &str, danger: bool) {
+        let palette = self.palette();
         self.backdrop(canvas, id, rect);
         let (icon_color, text_color) = if danger {
-            (palette::ERR, palette::ERR)
+            (palette.err, palette.err)
         } else if self.hover == Some(id) {
-            (palette::ACCENT_TEXT, palette::FG)
+            (palette.accent_text, palette.fg)
         } else {
-            (palette::ACCENT_TEXT, palette::MUTED)
+            (palette.accent_text, palette.muted)
         };
         let mid = (rect.top + rect.bottom) / 2.0;
         Self::draw_icon(canvas, icon, Point::new(rect.left + 8.0 + ICON / 2.0, mid), self.color(icon_color, 1.0));
@@ -683,12 +742,13 @@ impl<T: TextEngine> OverlayModel<T> for OrbMenu {
         })
     }
     fn draw<C: Canvas<Text = T>>(&self, canvas: &mut C, _: Instant) {
+        let palette = self.palette();
         let height = self.height();
-        canvas.fill_rounded_rect(Rect::new(0.0, 0.0, WIDTH, height), RADIUS, self.color(palette::PANEL, 1.0));
+        canvas.fill_rounded_rect(Rect::new(0.0, 0.0, WIDTH, height), RADIUS, self.color(palette.panel, 1.0));
         canvas.stroke_rounded_rect(
             Rect::new(0.5, 0.5, WIDTH - 0.5, height - 0.5),
             RADIUS - 0.5,
-            self.color(palette::WHITE, 0.18),
+            self.color(palette.border, palette.border_alpha),
             Stroke::plain(1.0),
         );
         let rows = rows();
@@ -697,10 +757,10 @@ impl<T: TextEngine> OverlayModel<T> for OrbMenu {
             "悬浮球设置",
             &text_style(14.0, 600, false),
             Rect::new(PAD, PAD, rows.close.left, PAD + HEADER),
-            self.color(palette::FG, 1.0),
+            self.color(palette.fg, 1.0),
         );
         self.backdrop(canvas, ID_CLOSE, rows.close);
-        let close_color = if self.hover == Some(ID_CLOSE) { palette::FG } else { palette::SUBTLE };
+        let close_color = if self.hover == Some(ID_CLOSE) { palette.fg } else { palette.subtle };
         let c = rows.close;
         Self::draw_icon(
             canvas,
@@ -716,7 +776,7 @@ impl<T: TextEngine> OverlayModel<T> for OrbMenu {
         canvas.line(
             Point::new(PAD, rows.divider + 0.5),
             Point::new(WIDTH - PAD, rows.divider + 0.5),
-            self.color(palette::WHITE, 0.11),
+            self.color(palette.line, palette.line_alpha),
             Stroke::plain(1.0),
         );
         self.draw_action(canvas, ID_OPEN_MAIN, rows.actions[0], &OPEN_MAIN_ICON, "打开软件主界面", false);
@@ -726,7 +786,7 @@ impl<T: TextEngine> OverlayModel<T> for OrbMenu {
             let rect = Rect::new(rows.error.left, rows.error.top, rows.error.right, rows.error.top + self.error_height);
             let engine = canvas.text();
             if let Some(layout) = engine.layout(error, &text_style(12.0, 400, true), rect.width(), f32::MAX) {
-                canvas.draw_text(&layout, Point::new(rect.left, rect.top), self.color(palette::ERR, 1.0), None);
+                canvas.draw_text(&layout, Point::new(rect.left, rect.top), self.color(palette.err, 1.0), None);
             }
         }
         if let Some(id) = self.focus.filter(|_| self.keyboard) {
@@ -734,7 +794,7 @@ impl<T: TextEngine> OverlayModel<T> for OrbMenu {
             canvas.stroke_rounded_rect(
                 Rect::new(r.left - 2.0, r.top - 2.0, r.right + 2.0, r.bottom + 2.0),
                 8.0,
-                self.color(palette::ACCENT_TEXT, 1.0),
+                self.color(palette.accent_text, 1.0),
                 Stroke::plain(2.0),
             );
         }

@@ -1184,6 +1184,10 @@ fn merge_missing_config(target: &mut Value, defaults: &Value) {
 }
 
 impl PluginRegistry {
+    pub fn is_empty(&self) -> bool {
+        self.plugins.is_empty() && self.errors.is_empty()
+    }
+
     /// 要常驻内存的模型包：开了常驻、权重就绪，并且正被某个功能选用。
     /// `models_in_use` 是各功能当前选中的识别模型 ID，以及智能处理选用的大模型供应商 ID；
     /// 没被选用的模型常驻着只是白占内存。标点模型没有可选的模型 ID，有 sherpa 识别模型在用时才算在用；

@@ -24,7 +24,7 @@ export function Group({
   children: React.ReactNode;
 }) {
   return (
-    <section className={cn("flex flex-col gap-2", className)}>
+    <section className={cn("flex flex-col gap-2.5", className)}>
       {title && <SectionHeader title={title} description={description} right={right} />}
       <div className="rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-surface)] shadow-[var(--shadow-raise)] [&>*+*]:border-t [&>*+*]:border-[var(--color-line)]">
         {children}

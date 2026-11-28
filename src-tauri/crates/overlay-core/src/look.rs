@@ -46,8 +46,8 @@ pub struct Theme {
 }
 impl Theme {
     pub const DEFAULT: Self = Self {
-        tone: Tone::Dark,
-        accent: [39, 103, 234],
+        tone: Tone::Light,
+        accent: [37, 99, 235],
         custom_background: None,
     };
 
@@ -143,12 +143,19 @@ mod tests {
 
     #[test]
     fn background_tint_follows_accent_or_explicit_background() {
-        let theme = Theme {
+        let dark = Theme {
+            tone: Tone::Dark,
             accent: [255, 64, 19],
             ..Theme::DEFAULT
         };
-        assert_eq!(theme.background_rgb(), [12, 11, 16]);
-        assert_eq!(theme.glass_tint_rgb(), [13, 9, 11]);
+        assert_eq!(dark.background_rgb(), [12, 11, 16]);
+        assert_eq!(dark.glass_tint_rgb(), [13, 9, 11]);
+        let light = Theme {
+            tone: Tone::Light,
+            accent: [37, 99, 235],
+            ..Theme::DEFAULT
+        };
+        assert_eq!(light.background_rgb(), [240, 244, 251]);
         assert_eq!(
             Theme {
                 custom_background: Some([34, 26, 24]),

@@ -32,31 +32,42 @@ describe("theme store", () => {
     useThemeStore.setState({ theme: defaultAccentTheme });
   });
 
-  it("uses the product default accent and base background", () => {
+  it("uses the product default light accent and base background", () => {
     expect(defaultAccentTheme).toEqual({
+      tone: "light",
+      accent: "#2563EB",
+      backgroundMode: "custom",
+      background: "#F6F8FB",
+    });
+    applyThemeToDocument(defaultAccentTheme);
+    expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#F6F8FB");
+    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#2563EB");
+  });
+
+  it("switches a light custom background to the dark default when the tone turns dark", () => {
+    expect(backgroundTone("#F6F8FB")).toBe("light");
+    useThemeStore.getState().patch({ tone: "dark" });
+    expect(useThemeStore.getState().theme.background).toBe("#111318");
+    applyThemeToDocument(useThemeStore.getState().theme);
+    expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#111318");
+  });
+
+  it("preserves a legacy dark theme when hydrated", () => {
+    hydrateTheme({ tone: "dark", accent: "#2767EA", backgroundMode: "custom", background: "#0F0F0F" });
+    expect(useThemeStore.getState().theme).toEqual({
       tone: "dark",
       accent: "#2767EA",
       backgroundMode: "custom",
       background: "#0F0F0F",
     });
-    applyThemeToDocument(defaultAccentTheme);
-    expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#0F0F0F");
-    expect(document.documentElement.style.getPropertyValue("--color-accent")).toBe("#2767EA");
-  });
-
-  it("switches a dark custom background to the light default when the tone turns light", () => {
-    expect(backgroundTone("#0F0F0F")).toBe("dark");
-    useThemeStore.getState().patch({ tone: "light" });
-    expect(useThemeStore.getState().theme.background).toBe("#F4F4F5");
-    applyThemeToDocument(useThemeStore.getState().theme);
-    expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#F4F4F5");
+    expect(cmd).not.toHaveBeenCalled();
   });
 
   it("writes a stored theme back once its background had to be replaced", async () => {
-    hydrateTheme({ tone: "light", accent: "#2767EA", backgroundMode: "custom", background: "#0F0F0F" });
+    hydrateTheme({ tone: "light", accent: "#2563EB", backgroundMode: "custom", background: "#0F0F0F" });
     await vi.waitFor(() => expect(cmd).toHaveBeenCalledWith("update_app_settings", {
       domain: "theme",
-      value: { tone: "light", accent: "#2767EA", backgroundMode: "custom", background: "#F4F4F5" },
+      value: { tone: "light", accent: "#2563EB", backgroundMode: "custom", background: "#F6F8FB" },
     }));
   });
 
@@ -106,13 +117,14 @@ describe("theme store", () => {
   it("uses an explicit background when follow-accent mode is disabled", () => {
     applyThemeToDocument({
       ...defaultAccentTheme,
+      tone: "dark",
       backgroundMode: "custom",
       background: "#221A18",
     });
 
     expect(document.documentElement.style.getPropertyValue("--theme-bg")).toBe("#221A18");
 
-    useThemeStore.getState().patch({ backgroundMode: "custom", background: "#282C34" });
+    useThemeStore.getState().patch({ tone: "dark", backgroundMode: "custom", background: "#282C34" });
     useThemeStore.getState().patch({ accent: "#E36B2C" });
     expect(useThemeStore.getState().theme.background).toBe("#282C34");
   });

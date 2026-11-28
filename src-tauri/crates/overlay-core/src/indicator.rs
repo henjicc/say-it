@@ -6,7 +6,7 @@ use crate::canvas::{
     Canvas, FontFamily, ParagraphAlign, TextAlign, TextEngine, TextStyle, TextTint,
 };
 use crate::geom::{Point, PxRect, Rect, Shape, Stroke};
-use crate::look::{Look, Profile};
+use crate::look::{Look, Profile, Tone};
 use crate::ui::paint::{self, fg};
 use crate::ui::{HitKind, HitMap, UiInput, UiPointer};
 use crate::window::{Cx, FrameSpec, Ops, OverlayModel, WindowEvent, WindowOp};
@@ -872,6 +872,11 @@ impl Indicator {
             let height =
                 (WAVE_MIN_H + level.clamp(0.0, 1.0) * (WAVE_MAX_H - WAVE_MIN_H)) * shrink;
             let height = height.max(WAVE_BAR_W);
+            let bar_color = if self.look.theme.tone == Tone::Light {
+                paint::accent(&self.look, alpha * (0.4 + 0.6 * fade))
+            } else {
+                fg(&self.look, alpha * (0.35 + 0.65 * fade))
+            };
             canvas.fill_rounded_rect(
                 Rect::new(
                     x,
@@ -880,7 +885,7 @@ impl Indicator {
                     center_y + height / 2.0,
                 ),
                 WAVE_BAR_W / 2.0,
-                fg(&self.look, alpha * (0.35 + 0.65 * fade)),
+                bar_color,
             );
         }
         canvas.restore();
@@ -935,7 +940,12 @@ impl Indicator {
                 if opacity < 0.01 || radius < 0.15 {
                     continue;
                 }
-                canvas.fill_circle(Point::new(x, y), radius, fg(&self.look, opacity));
+                let dot_color = if self.look.theme.tone == Tone::Light {
+                    paint::accent(&self.look, opacity)
+                } else {
+                    fg(&self.look, opacity)
+                };
+                canvas.fill_circle(Point::new(x, y), radius, dot_color);
             }
         }
     }
@@ -985,9 +995,15 @@ impl Indicator {
             canvas.clip_rect(pill);
         }
         let color = if warn {
-            self.look.color(229.0 / 255.0, 114.0 / 255.0, 108.0 / 255.0, alpha)
+            if self.look.theme.tone == Tone::Light {
+                self.look.color(220.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, alpha)
+            } else {
+                self.look.color(248.0 / 255.0, 113.0 / 255.0, 113.0 / 255.0, alpha)
+            }
+        } else if self.look.theme.tone == Tone::Light {
+            self.look.color(5.0 / 255.0, 150.0 / 255.0, 105.0 / 255.0, alpha)
         } else {
-            self.look.color(163.0 / 255.0, 166.0 / 255.0, 173.0 / 255.0, alpha)
+            self.look.color(148.0 / 255.0, 163.0 / 255.0, 184.0 / 255.0, alpha)
         };
         let icon_cx = rect.left + NOTICE_PAD_X + NOTICE_ICON / 2.0;
         let icon_cy = (rect.top + rect.bottom) / 2.0;
@@ -1331,7 +1347,7 @@ mod tests {
         let mut canvas = RecordingCanvas::new(144);
         model.draw(&mut canvas, now);
         assert!(matches!(canvas.calls[0], Draw::FillRounded(_, PILL_RADIUS, c)
-            if c == Look::WINDOWS_LEGACY.color(23.0/255.0, 24.0/255.0, 27.0/255.0, 0.96)));
+            if c == Look::WINDOWS_LEGACY.color(1.0, 1.0, 1.0, 0.97)));
         assert!(matches!(canvas.calls[1], Draw::StrokeRounded(_, _, _, _)));
         assert!(!matches!(canvas.calls[2], Draw::StrokeRounded(_, _, _, _)));
         assert!(!canvas.calls.iter().any(|call| matches!(call, Draw::Text(..))));
@@ -1680,7 +1696,7 @@ mod tests {
         let mut canvas = RecordingCanvas::new(144);
         model.draw(&mut canvas, now);
         assert!(matches!(canvas.calls[0], Draw::FillRounded(_, _, color)
-            if color == Color::new(23.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0.96)));
+            if color == Color::new(1.0, 1.0, 1.0, 0.97)));
         <Indicator as OverlayModel<FakeText>>::set_look(&mut model, &Look::MACOS_DEFAULT);
         assert!(shapes(&model).is_empty());
         <Indicator as OverlayModel<FakeText>>::set_look(

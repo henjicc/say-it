@@ -1,12 +1,13 @@
 //! 数据根目录：所有应用数据（设置、插件、模型等）的统一落位入口。
 //!
-//! 默认根目录为 `app_local_data_dir()`；用户可迁移到自定义位置，此时在默认目录
-//! 保留 `data-root.json` 指针文件。路径在进程启动时解析一次（`OnceLock`），
-//! 迁移完成后需要重启才会生效，避免运行中各模块读到新旧混合路径。
+//! 默认根目录为 `app_local_data_dir()`；用户可迁移到自定义位置（自动在其下创建
+//! `SayItData` 专属子文件夹），并在默认目录保留 `data-root.json` 指针文件。
+//! 已有业务数据/插件时迁移需重启生效；首次引导尚未安装模型或插件前允许原地切换，
+//! 让后续下载的模型直接落到目标目录。
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,8 @@ use tauri::{AppHandle, Emitter, Manager};
 const POINTER_FILE: &str = "data-root.json";
 /// 重置数据的标记文件，固定放在默认目录（和指针文件同级），下次启动最早期读取。
 const RESET_MARKER_FILE: &str = "reset-pending.marker";
+/// 选择自定义位置（含磁盘根目录）时自动创建的专属子文件夹名。
+pub(crate) const CUSTOM_ROOT_SUBDIR: &str = "SayItData";
 
 /// 参与迁移的数据条目白名单。指针文件本身与 WebView2 运行时缓存（`EBWebView`）
 /// 固定留在默认目录：前者是定位新目录的锚点，后者由 WebView2 独占且无法重定位。
@@ -44,7 +47,7 @@ const MIGRATABLE_DIRS: &[&str] = &[
 
 pub(crate) const MIGRATION_EVENT: &str = "data-root-migration";
 
-static DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
+static DATA_ROOT: RwLock<Option<PathBuf>> = RwLock::new(None);
 static MIGRATING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -96,7 +99,8 @@ fn resolve_root_from(default_root: &Path) -> PathBuf {
     }
 }
 
-/// 启动时调用一次；后续 `data_root()` 全程返回同一路径。
+/// 启动时调用一次；初始化生效数据根并把凭据主密钥固定在默认目录。
+/// 首次引导阶段允许通过 `migrate_data_root` 原地更新生效数据根。
 pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
     let root = data_root(app)?;
     // 凭据主密钥始终留在当前用户的默认应用私有目录；即使用户把普通数据根迁到
@@ -111,15 +115,121 @@ pub(crate) fn initialize(app: &AppHandle) -> Result<(), String> {
 
 /// 所有数据路径的唯一入口：返回本次进程生效的数据根目录（保证已创建）。
 pub(crate) fn data_root(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Some(root) = DATA_ROOT.get() {
-        return Ok(root.clone());
+    if let Some(root) = DATA_ROOT
+        .read()
+        .map_err(|_| "数据目录状态锁已损坏".to_string())?
+        .clone()
+    {
+        return Ok(root);
+    }
+    let mut slot = DATA_ROOT
+        .write()
+        .map_err(|_| "数据目录状态锁已损坏".to_string())?;
+    if let Some(root) = slot.clone() {
+        return Ok(root);
     }
     let default = default_root(app)?;
     std::fs::create_dir_all(&default).map_err(|error| format!("创建应用数据目录失败：{error}"))?;
     let resolved = resolve_root_from(&default);
     std::fs::create_dir_all(&resolved).map_err(|error| format!("创建数据根目录失败：{error}"))?;
-    let _ = DATA_ROOT.set(resolved);
-    Ok(DATA_ROOT.get().expect("data root just set").clone())
+    *slot = Some(resolved.clone());
+    Ok(resolved)
+}
+
+fn set_active_data_root(next: PathBuf) -> Result<(), String> {
+    let mut slot = DATA_ROOT
+        .write()
+        .map_err(|_| "数据目录状态锁已损坏".to_string())?;
+    *slot = Some(next);
+    Ok(())
+}
+
+/// 解析用户选中的目标目录：
+/// - 选中默认目录本身时直接返回（恢复默认不套子文件夹）；
+/// - 末尾路径段已经是 `SayItData`（忽略大小写）时不重复嵌套，并统一去掉尾部路径分隔符；
+/// - 其余任何绝对路径（含磁盘根目录如 `D:\`、`E:\`、`/` 或普通目录）自动在其下新建 `SayItData`。
+pub(crate) fn resolve_custom_target_dir(selected: &Path, default: &Path) -> PathBuf {
+    if same_path(selected, default) {
+        return default.to_path_buf();
+    }
+    let already_named = selected
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(CUSTOM_ROOT_SUBDIR));
+    if already_named {
+        selected.components().collect()
+    } else {
+        selected.join(CUSTOM_ROOT_SUBDIR)
+    }
+}
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                } else if !matches!(
+                    normalized.components().next_back(),
+                    Some(Component::RootDir | Component::Prefix(_))
+                ) {
+                    normalized.push(component);
+                }
+            }
+            other => normalized.push(other),
+        }
+    }
+    normalized
+}
+
+/// 在目录可能尚未创建时，把 `candidate` 规整到规范化祖先路径，便于和 `base_canonical` 比较。
+fn resolve_canonical_prefix(candidate: &Path) -> Option<PathBuf> {
+    let lexical = normalize_lexical(candidate);
+    let mut suffix = Vec::new();
+    let mut cursor = lexical.as_path();
+    loop {
+        if cursor.exists() {
+            let mut resolved = std::fs::canonicalize(cursor).ok()?;
+            for part in suffix.into_iter().rev() {
+                resolved.push(part);
+            }
+            return Some(resolved);
+        }
+        let name = cursor.file_name()?.to_os_string();
+        suffix.push(name);
+        cursor = cursor.parent()?;
+    }
+}
+
+pub(crate) fn is_migrating() -> bool {
+    MIGRATING.load(Ordering::SeqCst)
+}
+
+/// 首次引导尚未完成、且未安装任何插件/模型包、无下载任务时，允许原地切换生效目录，
+/// 让引导后续步骤下载的模型直接落到新目录，无需中途重启。
+fn can_switch_immediately(app: &AppHandle) -> bool {
+    if crate::providers::model_download::has_active_downloads() {
+        return false;
+    }
+    let state = app.state::<crate::state::RuntimeState>();
+    let onboarding_incomplete = state
+        .app_settings
+        .lock()
+        .map(|settings| settings.onboarding_version == 0)
+        .unwrap_or(false);
+    if !onboarding_incomplete {
+        return false;
+    }
+    state
+        .plugin_registry
+        .lock()
+        .map(|registry| registry.is_empty())
+        .unwrap_or(false)
 }
 
 /// 数据根目录下的子目录（自动创建）。
@@ -249,7 +359,7 @@ pub(crate) async fn migrate_data_root(
     target: String,
 ) -> Result<DataRootStatus, String> {
     if MIGRATING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
         return Err("已有一次数据目录迁移正在进行".into());
@@ -257,19 +367,23 @@ pub(crate) async fn migrate_data_root(
     struct Guard;
     impl Drop for Guard {
         fn drop(&mut self) {
-            MIGRATING.store(false, Ordering::Release);
+            MIGRATING.store(false, Ordering::SeqCst);
         }
     }
     let _guard = Guard;
+    // 在持有 `MIGRATING` 后再复核活跃下载；`model_download::begin_download` 在
+    // `ACTIVE_DOWNLOADS` 锁内反向检查 `is_migrating()`，形成线性化互斥。
+    if crate::providers::model_download::has_active_downloads() {
+        return Err("正在下载本地模型，请等待下载完成后再更改数据目录".into());
+    }
     // 会议分轨正在写进 `meetings/`，迁移会把它们复制成半截文件并删掉原文件。
     let state = app.state::<crate::state::RuntimeState>();
     let _meeting = state.meeting_runtime.hold_idle_for_migration().await?;
 
     let worker_app = app.clone();
-    let result =
-        tauri::async_runtime::spawn_blocking(move || migrate_blocking(&worker_app, &target))
-            .await
-            .map_err(|error| format!("迁移任务执行失败：{error}"))?;
+    let result = tauri::async_runtime::spawn_blocking(move || migrate_blocking(&worker_app, &target))
+        .await
+        .map_err(|error| format!("迁移任务执行失败：{error}"))?;
     match &result {
         Ok(_) => emit_progress(&app, "done", 0, 0, 0, 0, None),
         Err(message) => emit_progress(&app, "failed", 0, 0, 0, 0, Some(message)),
@@ -305,57 +419,98 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
     if target.is_empty() {
         return Err("目标目录不能为空".into());
     }
-    let target = PathBuf::from(target);
-    if !target.is_absolute() {
+    let selected = PathBuf::from(target);
+    if !selected.is_absolute() {
         return Err("目标目录必须是绝对路径".into());
     }
     let default = default_root(app)?;
     let current = data_root(app)?;
+    let target = resolve_custom_target_dir(&selected, &default);
 
     // 上一次迁移尚未重启生效时，绝不能再迁一次。
     //
-    // `current` 是 OnceLock 缓存的「本次进程生效根目录」，而指针文件已经指向上一次
-    // 的新目录，且旧根目录里的可迁移数据在上次迁移末尾就已被清空。此时再发起迁移，
-    // `collect_migration_plan(&current)` 会在这个空目录上收集到空计划、复制 0 个文件、
-    // 「校验通过」，然后把指针改写到新的空目录——重启后应用变成全新安装状态，真实
-    // 数据留在上一次的目录里，而 UI 不会给出任何指向它的线索。
-    //
-    // 这条路径很容易走到：上次迁移若在「旧数据清理」阶段部分失败，命令会返回 Err，
-    // 用户看到「迁移失败」后非常自然地会再迁一次。
+    // `current` 是本次进程生效根目录，而指针文件已经指向上一次的新目录，且旧根目录里的
+    // 可迁移数据在上次迁移末尾就已被清空。此时再发起迁移，会收集到空计划、复制 0 个文件
+    // 并把指针改写到新的空目录——重启后应用变成全新安装状态，真实数据留在上一次的目录里。
     ensure_previous_migration_applied(&default, &current)?;
 
-    std::fs::create_dir_all(&target).map_err(|error| format!("创建目标目录失败：{error}"))?;
-    let canonical_target =
-        std::fs::canonicalize(&target).map_err(|error| format!("解析目标目录失败：{error}"))?;
     let canonical_current = std::fs::canonicalize(&current)
         .map_err(|error| format!("解析当前数据目录失败：{error}"))?;
     let canonical_default = std::fs::canonicalize(&default).unwrap_or_else(|_| default.clone());
 
+    if let Some(resolved_target) = resolve_canonical_prefix(&target) {
+        if resolved_target == canonical_current {
+            return Err("目标目录与当前数据目录相同，无需迁移".into());
+        }
+        if resolved_target.starts_with(&canonical_current) {
+            return Err("目标目录不能位于当前数据目录内部".into());
+        }
+    }
+
+    let mut created_dirs = Vec::new();
+    let mut cursor = target.as_path();
+    while !cursor.exists() {
+        created_dirs.push(cursor.to_path_buf());
+        let Some(parent) = cursor.parent() else {
+            break;
+        };
+        cursor = parent;
+    }
+    let cleanup_new_dirs = |dirs: &[PathBuf]| {
+        for dir in dirs {
+            let _ = std::fs::remove_dir(dir);
+        }
+    };
+    std::fs::create_dir_all(&target).map_err(|error| {
+        cleanup_new_dirs(&created_dirs);
+        format!("创建目标目录失败：{error}")
+    })?;
+    let canonical_target = match std::fs::canonicalize(&target) {
+        Ok(path) => path,
+        Err(error) => {
+            cleanup_new_dirs(&created_dirs);
+            return Err(format!("解析目标目录失败：{error}"));
+        }
+    };
+
     if canonical_target == canonical_current {
+        cleanup_new_dirs(&created_dirs);
         return Err("目标目录与当前数据目录相同，无需迁移".into());
     }
     if canonical_target.starts_with(&canonical_current) {
+        cleanup_new_dirs(&created_dirs);
         return Err("目标目录不能位于当前数据目录内部".into());
     }
     let target_is_default = canonical_target == canonical_default;
-    validate_target_contents(&target, target_is_default)?;
-    probe_writable(&target)?;
+    if let Err(error) = validate_target_contents(&target, target_is_default) {
+        cleanup_new_dirs(&created_dirs);
+        return Err(error);
+    }
+    if let Err(error) = probe_writable(&target) {
+        cleanup_new_dirs(&created_dirs);
+        return Err(error);
+    }
 
     // 顺序不能反：`pause_for_data_root_migration` 会先停掉历史写入再做一次
     // `wal_checkpoint(TRUNCATE)`。若在它之前收集复制清单，checkpoint 之后新生成的
     // `history.sqlite3-wal` 就不在清单里，而迁移末尾的 `remove_migratable_entries`
     // 会把旧目录连同这个 wal 一起删掉——落在其中的提交静默丢失。
-    crate::application::history::pause_for_data_root_migration(app)?;
+    if let Err(error) = crate::application::history::pause_for_data_root_migration(app) {
+        cleanup_new_dirs(&created_dirs);
+        return Err(error);
+    }
     // 暂停之后的每一条失败路径都必须先恢复写入，否则历史会一直停在暂停态直到重启。
     let plan = match collect_migration_plan(&current) {
         Ok(plan) => plan,
         Err(error) => {
-            crate::application::history::resume_after_failed_data_root_migration();
+            cleanup_new_dirs(&created_dirs);
+            crate::application::history::resume_after_data_root_migration();
             return Err(error);
         }
     };
     if let Err(error) = ensure_free_space(&target, plan.total_bytes) {
-        crate::application::history::resume_after_failed_data_root_migration();
+        cleanup_new_dirs(&created_dirs);
+        crate::application::history::resume_after_data_root_migration();
         return Err(error);
     }
 
@@ -380,25 +535,40 @@ fn migrate_blocking(app: &AppHandle, target: &str) -> Result<(), String> {
 
     if let Err(error) = copy_and_verify(&current, &target, &plan, &mut progress) {
         cleanup_partial_target(&target);
-        crate::application::history::resume_after_failed_data_root_migration();
+        cleanup_new_dirs(&created_dirs);
+        crate::application::history::resume_after_data_root_migration();
         return Err(error);
     }
 
     // 复制与校验都成功后才切换指针；指针始终写在默认目录。
     if target_is_default {
         if let Err(error) = remove_pointer(&default) {
-            crate::application::history::resume_after_failed_data_root_migration();
+            cleanup_partial_target(&target);
+            cleanup_new_dirs(&created_dirs);
+            crate::application::history::resume_after_data_root_migration();
             return Err(error);
         }
-    } else {
-        if let Err(error) = write_pointer(&default, &target) {
-            crate::application::history::resume_after_failed_data_root_migration();
-            return Err(error);
-        }
+    } else if let Err(error) = write_pointer(&default, &target) {
+        cleanup_partial_target(&target);
+        cleanup_new_dirs(&created_dirs);
+        crate::application::history::resume_after_data_root_migration();
+        return Err(error);
     }
 
-    crate::providers::local_asr::cache::disable_until_restart()?;
-    crate::providers::local_llm::release(None);
+    let live_switch = can_switch_immediately(app);
+    if live_switch {
+        // 首次引导尚未加载任何插件/模型，指针生效后立刻切换进程数据根并恢复历史写入，
+        // 后续在引导内下载的模型包直接落在新目录。
+        set_active_data_root(target.clone())?;
+        crate::providers::model_download::remember_hashes_in(target.join("model-file-hashes.json"));
+        if let Err(error) = crate::application::dev_trace::rebind_data_root(&target) {
+            eprintln!("[data-root] 更新开发追踪目录失败：{error}");
+        }
+        crate::application::history::resume_after_data_root_migration();
+    } else {
+        crate::providers::local_asr::cache::disable_until_restart()?;
+        crate::providers::local_llm::release(None);
+    }
 
     // 旧数据删除失败不回滚迁移（指针已切换），仅提示手动清理。
     if let Err(warning) = remove_migratable_entries(&current) {
@@ -423,7 +593,7 @@ struct MigrationPlan {
 /// 改写到新的空目录，重启后应用变成全新安装状态。
 /// 迁移进行中、或已迁移但还没重启时，新写进数据目录的文件会留在旧目录里。
 pub(crate) fn ensure_writable(app: &AppHandle) -> Result<(), String> {
-    if MIGRATING.load(Ordering::Acquire) {
+    if is_migrating() {
         return Err("正在迁移数据目录，完成后再试".into());
     }
     ensure_previous_migration_applied(&default_root(app)?, &data_root(app)?)
@@ -905,5 +1075,75 @@ mod tests {
             "失败信息应当指出是哪个条目，便于用户手动清理"
         );
         assert!(!marker.exists(), "标记必须被消费，不能留到下次启动重复清空");
+    }
+
+    #[test]
+    fn custom_target_appends_dedicated_subdir_without_nesting() {
+        let default = temp_dir("resolve-default");
+        // 恢复默认位置不套子文件夹。
+        assert_eq!(resolve_custom_target_dir(&default, &default), default);
+
+        // 普通目录自动新建 SayItData 子文件夹。
+        let custom = temp_dir("resolve-custom");
+        assert_eq!(
+            resolve_custom_target_dir(&custom, &default),
+            custom.join(CUSTOM_ROOT_SUBDIR)
+        );
+
+        // 末尾已是 SayItData（含不同大小写或尾斜杠）时不重复嵌套。
+        let already = custom.join("SayItData");
+        assert_eq!(resolve_custom_target_dir(&already, &default), already);
+        let lower = custom.join("sayitdata");
+        assert_eq!(resolve_custom_target_dir(&lower, &default), lower);
+
+        // 磁盘根目录自动追加 SayItData，且末尾已是 SayItData 时统一去掉尾斜杠。
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                resolve_custom_target_dir(Path::new(r"D:\"), &default),
+                PathBuf::from(r"D:\SayItData")
+            );
+            assert_eq!(
+                resolve_custom_target_dir(Path::new(r"E:\SayItData\"), &default),
+                PathBuf::from(r"E:\SayItData")
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(
+                resolve_custom_target_dir(Path::new("/"), &default),
+                PathBuf::from("/SayItData")
+            );
+            assert_eq!(
+                resolve_custom_target_dir(Path::new("/Volumes/ExternalSSD"), &default),
+                PathBuf::from("/Volumes/ExternalSSD/SayItData")
+            );
+            assert_eq!(
+                resolve_custom_target_dir(Path::new("/Volumes/ExternalSSD/SayItData/"), &default),
+                PathBuf::from("/Volumes/ExternalSSD/SayItData")
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&default);
+        let _ = std::fs::remove_dir_all(&custom);
+    }
+
+    #[test]
+    fn canonical_prefix_detects_nonexistent_child_inside_current_root() {
+        let current = temp_dir("prefix-current");
+        let canonical = std::fs::canonicalize(&current).unwrap();
+        let nested = current.join("sub").join(CUSTOM_ROOT_SUBDIR);
+        let resolved = resolve_canonical_prefix(&nested).unwrap();
+        assert!(resolved.starts_with(&canonical));
+
+        let with_parent_dir = current.join("nonexistent").join("..").join("sub");
+        let resolved_parent = resolve_canonical_prefix(&with_parent_dir).unwrap();
+        assert!(resolved_parent.starts_with(&canonical));
+
+        let sibling = current.parent().unwrap().join("sayit-sibling-nonexistent");
+        let resolved_sibling = resolve_canonical_prefix(&sibling).unwrap();
+        assert!(!resolved_sibling.starts_with(&canonical));
+
+        let _ = std::fs::remove_dir_all(&current);
     }
 }

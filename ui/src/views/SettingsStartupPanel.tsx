@@ -59,7 +59,7 @@ function DataRootSection() {
     try {
       const next = await cmd<DataRootStatus>(CMD.migrateDataRoot, { target });
       setStatus(next);
-      setMessage("迁移完成。新位置将在重启后生效。");
+      setMessage(next.restartRequired ? "迁移完成。新位置将在重启后生效。" : "数据目录已切换并生效。");
       setMessageTone("info");
     } catch (e) {
       setMessage(`迁移失败：${String(e)}`);
@@ -86,7 +86,7 @@ function DataRootSection() {
     <Group title="数据目录">
       <Row
         label="存储位置"
-        hint="设置、插件和模型保存在这个文件夹。更改位置会搬移全部数据，完成后重启生效。"
+        hint="设置、插件和模型保存在这个文件夹。选择任意目录或磁盘根目录时会自动在其下新建 SayItData 专属文件夹。"
         message={
           <>
             <span className="block break-all font-mono">{status ? status.configuredRoot : "读取中…"}</span>

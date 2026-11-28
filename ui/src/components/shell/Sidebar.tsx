@@ -14,8 +14,8 @@ function RailButton({ item, active, onClick }: { item: NavItem; active: boolean;
         "flex h-[52px] w-[52px] flex-col items-center justify-center gap-1 rounded-[var(--radius-md)] text-xs transition-colors duration-[var(--dur-fast)]",
         "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
         active
-          ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
-          : "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]",
+          ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] shadow-[var(--shadow-sm)]"
+          : "text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
       )}
     >
       <span className="h-[18px] w-[18px]">{item.icon}</span>

@@ -1,7 +1,7 @@
 import { CMD, cmd, cmdSilent } from "@/lib/tauri";
 import { useDictationStore } from "@/store/useDictationStore";
 import { reportShortcutConflict } from "@/features/hotkeys/conflictFeedback";
-import { shortcutModifierLabels } from "@/lib/platform";
+import { isMacOS, shortcutModifierLabels } from "@/lib/platform";
 
 type Tone = "" | "ok" | "err";
 
@@ -69,6 +69,7 @@ export function configureHotkeys(next: HotkeyHooks) {
 const KEY_DISPLAY_NAMES: Record<string, string> = {
   Fn: "Fn",
   CapsLock: "Caps Lock",
+  AltRight: isMacOS ? "右 Option" : "右 Alt",
   Space: "Space",
   Enter: "Enter",
   Tab: "Tab",

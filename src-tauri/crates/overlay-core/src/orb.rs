@@ -1,7 +1,7 @@
 use crate::anim::Transition;
 use crate::canvas::{Canvas, SvgIcon, TextEngine};
 use crate::geom::{Color, Point, PxRect, Rect, Stroke, Transform};
-use crate::look::Look;
+use crate::look::{Look, Tone};
 use crate::svg::SvgSeg;
 use crate::ui::gesture::exceeds_drag_threshold;
 use crate::ui::paint::LevelBars;
@@ -25,19 +25,61 @@ const WAVE_SMOOTH_S: f32 = 0.070;
 /// 麦克风图标（SVG path，24x24 viewBox）。
 const MIC_SVG_PATH: &str = "M12 15c1.66 0 2.99-1.34 2.99-3L15 6c0-1.66-1.34-3-3-3S9 4.34 9 6v6c0 1.66 1.34 3 3 3m6.08-3c-.42 0-.77.3-.83.71c-.37 2.61-2.72 4.39-5.25 4.39s-4.88-1.77-5.25-4.39a.84.84 0 0 0-.83-.71c-.52 0-.92.46-.85.97c.46 2.97 2.96 5.3 5.93 5.75V21c0 .55.45 1 1 1s1-.45 1-1v-2.28c2.96-.43 5.47-2.78 5.93-5.75a.857.857 0 0 0-.85-.97";
 
-// 与听写胶囊同一套单色风格：深色底、一圈浅色细线、浅色内容；只有警告和错误的图标带颜色。
-const BG: (u8, u8, u8) = (23, 24, 27);
-const BG_ALPHA: f32 = 0.96;
-const FG: (u8, u8, u8) = (236, 237, 239); // --color-fg
-const OUTLINE: (u8, u8, u8) = (255, 255, 255);
-/// 描边的不透明度：平时与胶囊相同，悬停、待命时提亮（胶囊悬停的强调）。
-const OUTLINE_ALPHA: f32 = 0.34;
-const OUTLINE_ALPHA_STRONG: f32 = 0.48;
-/// 空闲时图标略暗，悬停或有事发生时提到全亮。
+// 随主窗口色调切换的悬浮球配色：亮色为纯白浮球配深灰/品牌蓝图标，暗色为深灰蓝球配浅色图标。
+const BG_ALPHA_LIGHT: f32 = 0.97;
+const BG_ALPHA_DARK: f32 = 0.96;
+const OUTLINE_ALPHA_LIGHT: f32 = 0.16;
+const OUTLINE_ALPHA_LIGHT_STRONG: f32 = 0.55;
+const OUTLINE_ALPHA_DARK: f32 = 0.24;
+const OUTLINE_ALPHA_DARK_STRONG: f32 = 0.44;
+/// 空闲时图标略淡，悬停或有事发生时提到全亮。
 const ICON_ALPHA_IDLE: f32 = 0.78;
 const ICON_ALPHA_CANCELLED: f32 = 0.6;
-const WARN: (u8, u8, u8) = (217, 164, 65); // fallback/busy，--color-warn #d9a441
-const ERROR_RGB: (u8, u8, u8) = (229, 114, 108); // --color-err #e5726c
+
+fn orb_bg(look: &Look) -> ((u8, u8, u8), f32) {
+    if look.theme.tone == Tone::Light {
+        ((255, 255, 255), BG_ALPHA_LIGHT)
+    } else {
+        ((24, 27, 34), BG_ALPHA_DARK)
+    }
+}
+
+fn orb_fg(look: &Look) -> (u8, u8, u8) {
+    if look.theme.tone == Tone::Light {
+        (15, 23, 42)
+    } else {
+        (241, 245, 249)
+    }
+}
+
+fn orb_accent(look: &Look) -> (u8, u8, u8) {
+    let [r, g, b] = look.theme.accent;
+    (r, g, b)
+}
+
+fn orb_outline(look: &Look) -> (u8, u8, u8) {
+    if look.theme.tone == Tone::Light {
+        (15, 23, 42)
+    } else {
+        (255, 255, 255)
+    }
+}
+
+fn orb_warn(look: &Look) -> (u8, u8, u8) {
+    if look.theme.tone == Tone::Light {
+        (217, 119, 6)
+    } else {
+        (251, 191, 36)
+    }
+}
+
+fn orb_error(look: &Look) -> (u8, u8, u8) {
+    if look.theme.tone == Tone::Light {
+        (220, 38, 38)
+    } else {
+        (248, 113, 113)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrbPhase {
@@ -144,6 +186,7 @@ pub enum Command {
 struct OrbStyle {
     icon: (u8, u8, u8),
     icon_alpha: f32,
+    border: (u8, u8, u8),
     border_alpha: f32,
 }
 
@@ -159,21 +202,34 @@ impl OrbStyle {
         OrbStyle {
             icon: mix(self.icon, other.icon),
             icon_alpha: self.icon_alpha + (other.icon_alpha - self.icon_alpha) * t,
+            border: mix(self.border, other.border),
             border_alpha: self.border_alpha + (other.border_alpha - self.border_alpha) * t,
         }
     }
 }
 
 /// 各相位的图标颜色与描边强弱。
-fn phase_style(phase: OrbPhase, hovering: bool) -> OrbStyle {
+fn phase_style(phase: OrbPhase, hovering: bool, look: &Look) -> OrbStyle {
+    let light = look.theme.tone == Tone::Light;
+    let accent = orb_accent(look);
+    let outline = orb_outline(look);
+    let outline_base = if light { OUTLINE_ALPHA_LIGHT } else { OUTLINE_ALPHA_DARK };
+    let outline_strong = if light {
+        OUTLINE_ALPHA_LIGHT_STRONG
+    } else {
+        OUTLINE_ALPHA_DARK_STRONG
+    };
     let lit = OrbStyle {
-        icon: FG,
+        icon: orb_fg(look),
         icon_alpha: 1.0,
-        border_alpha: OUTLINE_ALPHA,
+        border: outline,
+        border_alpha: outline_base,
     };
     match phase {
         OrbPhase::Idle if hovering => OrbStyle {
-            border_alpha: OUTLINE_ALPHA_STRONG,
+            icon: if light { accent } else { lit.icon },
+            border: if light { accent } else { outline },
+            border_alpha: outline_strong,
             ..lit
         },
         OrbPhase::Idle => OrbStyle {
@@ -181,16 +237,27 @@ fn phase_style(phase: OrbPhase, hovering: bool) -> OrbStyle {
             ..lit
         },
         OrbPhase::Armed => OrbStyle {
-            border_alpha: OUTLINE_ALPHA_STRONG,
+            icon: if light { accent } else { lit.icon },
+            border: if light { accent } else { outline },
+            border_alpha: outline_strong,
             ..lit
         },
-        OrbPhase::Recording if hovering => OrbStyle {
-            border_alpha: OUTLINE_ALPHA_STRONG,
+        OrbPhase::Recording => OrbStyle {
+            icon: if light { accent } else { lit.icon },
+            border: if light { accent } else { outline },
+            border_alpha: if hovering || light { outline_strong } else { outline_base },
             ..lit
         },
-        OrbPhase::Busy | OrbPhase::Fallback => OrbStyle { icon: WARN, ..lit },
+        OrbPhase::Processing | OrbPhase::SmartProcessing | OrbPhase::Submitting | OrbPhase::Success | OrbPhase::Submitted => OrbStyle {
+            icon: if light { accent } else { lit.icon },
+            ..lit
+        },
+        OrbPhase::Busy | OrbPhase::Fallback => OrbStyle {
+            icon: orb_warn(look),
+            ..lit
+        },
         OrbPhase::Error => OrbStyle {
-            icon: ERROR_RGB,
+            icon: orb_error(look),
             ..lit
         },
         OrbPhase::Cancelled => OrbStyle {
@@ -539,8 +606,8 @@ impl Orb {
             wave_level: 0.0,
             wave_peaks: Vec::new(),
             wave_display: [0.0; ORB_WAVE_BAR_COUNT],
-            style_from: phase_style(OrbPhase::Idle, false),
-            style_target: phase_style(OrbPhase::Idle, false),
+            style_from: phase_style(OrbPhase::Idle, false, look),
+            style_target: phase_style(OrbPhase::Idle, false, look),
             style_blend_start: None,
             spinner_angle: 0.0,
             dpi,
@@ -682,6 +749,10 @@ impl<T: TextEngine> OverlayModel<T> for Orb {
     }
     fn set_look(&mut self, look: &Look) -> Ops<OrbAction> {
         self.look = *look;
+        let current = phase_style(self.phase, self.hovering, &self.look);
+        self.style_from = current;
+        self.style_target = current;
+        self.style_blend_start = None;
         vec![WindowOp::Redraw]
     }
     fn on_frame(&mut self, dt: f32, cx: &Cx<'_, T>) -> Ops<OrbAction> {
@@ -717,7 +788,7 @@ impl<T: TextEngine> OverlayModel<T> for Orb {
             self.dpi = cx.dpi;
         }
         if self.phase != OrbPhase::Positioning {
-            let desired = phase_style(self.phase, self.hovering);
+            let desired = phase_style(self.phase, self.hovering, &self.look);
             if desired != self.style_target {
                 self.style_from = self.blended_style(cx.now);
                 self.style_target = desired;
@@ -750,16 +821,17 @@ impl Orb {
         let logical = self.bounds.width as f32 * 96.0 / (self.dpi.max(1) as f32);
         let style = self.blended_style(now);
         let center = logical / 2.0;
+        let (bg, bg_alpha) = orb_bg(&self.look);
         // 与 ui::paint::panel 相同的画法：整圆铺底，再向内半个像素画一圈 1 像素的细线。
         canvas.fill_circle(
             Point::new(center, center),
             center,
-            self.color8(BG, BG_ALPHA),
+            self.color8(bg, bg_alpha),
         );
         canvas.stroke_circle(
             Point::new(center, center),
             center - 0.5,
-            self.color8(OUTLINE, style.border_alpha),
+            self.color8(style.border, style.border_alpha),
             Stroke::plain(1.0),
         );
         let area = (
@@ -855,10 +927,11 @@ impl Orb {
         let mix = |bg: u8, fg: u8| {
             (f32::from(bg) + (f32::from(fg) - f32::from(bg)) * amount).round() as u8
         };
+        let (bg, _) = orb_bg(&self.look);
         let track = (
-            mix(BG.0, style.icon.0),
-            mix(BG.1, style.icon.1),
-            mix(BG.2, style.icon.2),
+            mix(bg.0, style.icon.0),
+            mix(bg.1, style.icon.1),
+            mix(bg.2, style.icon.2),
         );
         canvas.stroke_circle(
             Point::new(center, center),
@@ -925,7 +998,8 @@ impl Orb {
         let tl = lucide(area, 8.0, 1.5);
         let br = lucide(area, 16.0, 5.5);
         let tab = Rect::new(tl.x, tl.y, br.x, br.y);
-        canvas.fill_rounded_rect(tab, radius / 2.0, self.color8(BG, 1.0));
+        let (bg, _) = orb_bg(&self.look);
+        canvas.fill_rounded_rect(tab, radius / 2.0, self.color8(bg, 1.0));
         let color = self.color8(style.icon, style.icon_alpha);
         canvas.stroke_rounded_rect(outer, radius, color, Stroke::plain(width));
         canvas.stroke_rounded_rect(tab, radius / 2.0, color, Stroke::plain(width));
@@ -936,16 +1010,26 @@ impl Orb {
             logical - radius - logical * 0.01,
             logical - radius - logical * 0.01,
         );
-        // 浅色实心圆里放深色箭头，与球面反色。
-        canvas.fill_circle(center, radius, self.color8(FG, 1.0));
+        let badge_bg = if self.look.theme.tone == Tone::Light {
+            orb_accent(&self.look)
+        } else {
+            orb_fg(&self.look)
+        };
+        let badge_fg = if self.look.theme.tone == Tone::Light {
+            (255, 255, 255)
+        } else {
+            orb_bg(&self.look).0
+        };
+        canvas.fill_circle(center, radius, self.color8(badge_bg, 1.0));
         let side = radius * 1.2;
         let area = (center.x - side / 2.0, center.y - side / 2.0, side);
         self.draw_enter_arrow(
             canvas,
             area,
             OrbStyle {
-                icon: BG,
+                icon: badge_fg,
                 icon_alpha: 1.0,
+                border: badge_bg,
                 border_alpha: 1.0,
             },
         );
@@ -1342,21 +1426,22 @@ mod model_tests {
     #[test]
     fn hidden_phase_and_positioning_defer_style_target_until_visible_prepare() {
         let now = Instant::now();
-        let mut model = Orb::new(96, &Look::WINDOWS_LEGACY);
+        let look = Look::WINDOWS_LEGACY;
+        let mut model = Orb::new(96, &look);
         let context = cx(now, 96);
         state(&mut model, OrbPhase::Error, &context);
-        assert!(model.style_target == phase_style(OrbPhase::Idle, false));
+        assert!(model.style_target == phase_style(OrbPhase::Idle, false, &look));
         assert!(model.prepare_frame(&context).is_none());
         model.apply(Command::Show, &context);
         assert_eq!(model.style_blend_start, None);
         model.prepare_frame(&context);
-        assert!(model.style_target == phase_style(OrbPhase::Error, false));
+        assert!(model.style_target == phase_style(OrbPhase::Error, false, &look));
         assert_eq!(model.style_blend_start, Some(now));
-        assert!(model.blended_style(now) == phase_style(OrbPhase::Idle, false));
+        assert!(model.blended_style(now) == phase_style(OrbPhase::Idle, false, &look));
         let later = now + Duration::from_secs(1);
         state(&mut model, OrbPhase::Positioning, &cx(later, 96));
         model.prepare_frame(&cx(later, 96));
-        assert!(model.style_target == phase_style(OrbPhase::Error, false));
+        assert!(model.style_target == phase_style(OrbPhase::Error, false, &look));
         let mut canvas = RecordingCanvas::new(96);
         model.draw(&mut canvas, later);
         assert!(canvas.calls.is_empty());
@@ -1436,11 +1521,13 @@ mod model_tests {
         settle(&mut model, now);
         let mut canvas = RecordingCanvas::new(96);
         model.draw(&mut canvas, now);
+        let (expected_bg, expected_bg_alpha) = orb_bg(&Look::WINDOWS_LEGACY);
+        let idle_style = phase_style(OrbPhase::Idle, false, &Look::WINDOWS_LEGACY);
         assert!(
-            matches!(canvas.calls[0],Draw::FillCircle(_,_,color) if color==model.color8(BG, BG_ALPHA))
+            matches!(canvas.calls[0],Draw::FillCircle(_,_,color) if color==model.color8(expected_bg, expected_bg_alpha))
         );
         assert!(
-            matches!(canvas.calls[1],Draw::StrokeCircle(_,_,color,_) if color==model.color8(OUTLINE, OUTLINE_ALPHA))
+            matches!(canvas.calls[1],Draw::StrokeCircle(_,_,color,_) if color==model.color8(idle_style.border, idle_style.border_alpha))
         );
         assert!(matches!(canvas.calls[2], Draw::Save));
         assert!(matches!(canvas.calls[3], Draw::Transform(_)));
@@ -1497,8 +1584,9 @@ mod model_tests {
         model.prepare_frame(&cx(middle, 96));
         let mut canvas = RecordingCanvas::new(96);
         model.draw(&mut canvas, middle);
+        let hover_style = phase_style(OrbPhase::Idle, true, &Look::WINDOWS_LEGACY);
         assert!(
-            matches!(canvas.calls[1],Draw::StrokeCircle(_,_,color,_) if color!=model.color8(OUTLINE, OUTLINE_ALPHA_STRONG))
+            matches!(canvas.calls[1],Draw::StrokeCircle(_,_,color,_) if color!=model.color8(hover_style.border, hover_style.border_alpha))
         );
         let end = start + Duration::from_millis(151);
         // 已悬停的 Move 没有模型输入，宿主仍会查询 wants_frames 来同步定时器。
@@ -1521,7 +1609,7 @@ mod model_tests {
         canvas.calls.clear();
         model.draw(&mut canvas, end);
         assert!(
-            matches!(canvas.calls[1],Draw::StrokeCircle(_,_,color,_) if color==model.color8(OUTLINE, OUTLINE_ALPHA_STRONG))
+            matches!(canvas.calls[1],Draw::StrokeCircle(_,_,color,_) if color==model.color8(hover_style.border, hover_style.border_alpha))
         );
         assert_eq!(model.style_blend_start, None);
         assert_eq!(

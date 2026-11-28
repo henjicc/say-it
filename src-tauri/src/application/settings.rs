@@ -59,14 +59,23 @@ fn empty_object() -> Value {
 }
 fn default_theme() -> Value {
     serde_json::json!({
+        "tone":"light",
+        "accent":"#2563EB",
+        "backgroundMode":"custom",
+        "background":"#F6F8FB"
+    })
+}
+/// 旧版暗色默认主题：供 schema < 9 升级与旧 localStorage 导入保持暗色一致，不把老用户静默切亮。
+fn legacy_dark_default_theme() -> Value {
+    serde_json::json!({
         "tone":"dark",
         "accent":"#2767EA",
         "backgroundMode":"custom",
         "background":"#0F0F0F"
     })
 }
-/// 历代默认主题。用户从未改过主题时随版本换成当前默认值，改过的保持不动。
-/// schema 7 之前：#5199FF + 柔和背景；schema 9 之前：#286EC8 + 自定义 #0F0F0F。
+/// 早期暗色默认主题（schema 7 之前 #5199FF；schema 9 之前 #286EC8），升级时收敛到上代暗色默认，
+/// 避免老用户升级后从暗色被静默切到亮色；用户自定义颜色始终保持不动。
 fn superseded_default_themes() -> [Value; 2] {
     [
         serde_json::json!({
@@ -277,7 +286,7 @@ pub(crate) fn migrate_loaded_settings(settings: &mut AppSettings) {
         settings.diagnostics_prefs = serde_json::json!({"verboseLogging":legacy_verbose});
     }
     if settings.schema_version < 9 && superseded_default_themes().contains(&settings.theme) {
-        settings.theme = default_theme();
+        settings.theme = legacy_dark_default_theme();
     }
     settings.schema_version = SETTINGS_SCHEMA_VERSION;
 }
@@ -348,7 +357,7 @@ pub(crate) fn import_legacy_settings(
         if let Some(v) = legacy.theme {
             valid_object(&v)?;
             current.theme = if superseded_default_themes().contains(&v) {
-                default_theme()
+                legacy_dark_default_theme()
             } else {
                 v
             };
@@ -765,9 +774,10 @@ mod tests {
         assert_eq!(v.schema_version, SETTINGS_SCHEMA_VERSION);
         assert!(v.dictation_prefs.is_object());
         assert_eq!(v.history_prefs["retentionDays"], 30);
-        assert_eq!(v.theme["accent"], "#2767EA");
+        assert_eq!(v.theme["tone"], "light");
+        assert_eq!(v.theme["accent"], "#2563EB");
         assert_eq!(v.theme["backgroundMode"], "custom");
-        assert_eq!(v.theme["background"], "#0F0F0F");
+        assert_eq!(v.theme["background"], "#F6F8FB");
         assert!(v.assistant_prefs.get("translationModel").is_none());
         assert!(v.translation_prefs.is_object());
         assert_eq!(AppSettings::default().translation_prefs["engine"], "llm");
@@ -877,8 +887,14 @@ mod tests {
             defaults.schema_version = 8;
             defaults.theme = theme;
             migrate_loaded_settings(&mut defaults);
-            assert_eq!(defaults.theme, default_theme());
+            assert_eq!(defaults.theme, legacy_dark_default_theme());
         }
+
+        let mut prev_dark = AppSettings::default();
+        prev_dark.schema_version = 9;
+        prev_dark.theme = legacy_dark_default_theme();
+        migrate_loaded_settings(&mut prev_dark);
+        assert_eq!(prev_dark.theme, legacy_dark_default_theme());
 
         let mut customized = AppSettings::default();
         customized.schema_version = 6;

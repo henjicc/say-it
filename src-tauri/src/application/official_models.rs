@@ -100,6 +100,7 @@ pub(crate) async fn install_official_model_pack(
     pack_id: String,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
+    crate::application::data_root::ensure_writable(&app)?;
     // 安装会替换模型目录，必须和该包的下载互斥。
     let lease = model_download::begin_download(&pack_id)?;
     let client = model_download::https_client()?;

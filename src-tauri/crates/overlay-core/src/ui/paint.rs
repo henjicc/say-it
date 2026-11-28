@@ -1,15 +1,30 @@
 //! 共用的绘制组件：面板底、按钮底、文字标签、音量柱和计时文本。
 use crate::canvas::{Canvas, FontFamily, ParagraphAlign, TextAlign, TextEngine, TextStyle};
 use crate::geom::{Color, Point, Rect, Stroke};
-use crate::look::Look;
+use crate::look::{Look, Tone};
 
-/// 主前景色（与主窗口 --color-fg 一致）。
+/// 主前景色（随色调匹配主窗口 --color-fg）。
 pub fn fg(look: &Look, alpha: f32) -> Color {
-    look.color(236.0 / 255.0, 237.0 / 255.0, 239.0 / 255.0, alpha)
+    if look.theme.tone == Tone::Light {
+        look.color(15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0, alpha)
+    } else {
+        look.color(241.0 / 255.0, 245.0 / 255.0, 249.0 / 255.0, alpha)
+    }
 }
 
-/// 面板底：深色底加一圈内侧浅色细线；深色桌面靠亮线、浅色桌面靠深底看清轮廓。
-/// emphasis 取 0..1，越大描边越亮（悬停反馈）。
+/// 品牌强调色（跟随当前主题强调色）。
+pub fn accent(look: &Look, alpha: f32) -> Color {
+    let [r, g, b] = look.theme.accent;
+    look.color(
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
+        alpha,
+    )
+}
+
+/// 面板底：随主窗口色调切换清亮纯白浮卡或通透深灰面板，内侧一道细线稳住边缘轮廓。
+/// emphasis 取 0..1，越大描边越清晰（悬停反馈）。
 pub fn panel<C: Canvas>(
     canvas: &mut C,
     look: &Look,
@@ -18,26 +33,33 @@ pub fn panel<C: Canvas>(
     alpha: f32,
     emphasis: f32,
 ) {
-    canvas.fill_rounded_rect(
-        rect,
-        radius,
-        look.color(23.0 / 255.0, 24.0 / 255.0, 27.0 / 255.0, 0.96 * alpha),
-    );
+    let (fill, border) = if look.theme.tone == Tone::Light {
+        (
+            look.color(1.0, 1.0, 1.0, 0.97 * alpha),
+            look.color(
+                15.0 / 255.0,
+                23.0 / 255.0,
+                42.0 / 255.0,
+                (0.14 + 0.14 * emphasis) * alpha,
+            ),
+        )
+    } else {
+        (
+            look.color(24.0 / 255.0, 27.0 / 255.0, 34.0 / 255.0, 0.96 * alpha),
+            look.color(1.0, 1.0, 1.0, (0.22 + 0.16 * emphasis) * alpha),
+        )
+    };
+    canvas.fill_rounded_rect(rect, radius, fill);
     let inner = Rect::new(
         rect.left + 0.5,
         rect.top + 0.5,
         rect.right - 0.5,
         rect.bottom - 0.5,
     );
-    canvas.stroke_rounded_rect(
-        inner,
-        radius - 0.5,
-        look.color(1.0, 1.0, 1.0, (0.34 + 0.14 * emphasis) * alpha),
-        Stroke::plain(1.0),
-    );
+    canvas.stroke_rounded_rect(inner, radius - 0.5, border, Stroke::plain(1.0));
 }
 
-/// 面板上的按钮底：平时不画，悬停和按下各加一层浅色。
+/// 面板上的按钮底：平时不画，悬停和按下各加一层轻底色。
 pub fn button_backdrop<C: Canvas>(
     canvas: &mut C,
     look: &Look,
@@ -47,11 +69,16 @@ pub fn button_backdrop<C: Canvas>(
     pressed: bool,
 ) {
     let alpha = match (pressed, hovered) {
-        (true, _) => 0.22,
-        (false, true) => 0.12,
+        (true, _) => if look.theme.tone == Tone::Light { 0.12 } else { 0.22 },
+        (false, true) => if look.theme.tone == Tone::Light { 0.06 } else { 0.12 },
         (false, false) => return,
     };
-    canvas.fill_rounded_rect(rect, radius, look.color(1.0, 1.0, 1.0, alpha));
+    let color = if look.theme.tone == Tone::Light {
+        look.color(15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0, alpha)
+    } else {
+        look.color(1.0, 1.0, 1.0, alpha)
+    };
+    canvas.fill_rounded_rect(rect, radius, color);
 }
 
 /// 单行界面文字的样式：系统界面字体，在给定矩形内靠左、垂直居中。

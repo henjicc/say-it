@@ -156,36 +156,74 @@ fn with_state<W: OverlaySpec, R>(hwnd: HWND, f: impl FnOnce(&mut Host<W>) -> R) 
     }
 }
 
-type Threads = Mutex<HashMap<TypeId, Box<dyn Any + Send + Sync>>>;
+enum HostMessage<C> {
+    Command(C),
+    SetLook(Look),
+}
+
+struct ThreadEntry {
+    channel: Box<dyn Any + Send + Sync>,
+    set_look: Box<dyn Fn(Look) + Send + Sync>,
+}
+
+type Threads = Mutex<HashMap<TypeId, ThreadEntry>>;
 /// 每个窗口声明一条窗口线程；条目为 None 表示线程启动失败，之后的命令静默丢弃。
 fn threads() -> &'static Threads {
     static THREADS: OnceLock<Threads> = OnceLock::new();
     THREADS.get_or_init(Default::default)
 }
-fn send<W: OverlaySpec>(entry: &(dyn Any + Send + Sync), command: Command<W>) {
+
+fn look_store() -> &'static Mutex<Look> {
+    static CURRENT_LOOK: OnceLock<Mutex<Look>> = OnceLock::new();
+    CURRENT_LOOK.get_or_init(|| Mutex::new(Look::WINDOWS_LEGACY))
+}
+
+fn current_look() -> Look {
+    *look_store().lock().expect("overlay look poisoned")
+}
+
+/// 更新全部 Windows 原生悬浮窗的明暗与强调色外观。
+pub(crate) fn set_look(look: Look) {
+    *look_store().lock().expect("overlay look poisoned") = look;
+    let threads = threads().lock().expect("overlay thread registry poisoned");
+    for entry in threads.values() {
+        (entry.set_look)(look);
+    }
+}
+
+fn send<W: OverlaySpec>(entry: &ThreadEntry, command: Command<W>) {
     if let Some(thread) = entry
-        .downcast_ref::<Option<OverlayThread<Command<W>>>>()
+        .channel
+        .downcast_ref::<Option<OverlayThread<HostMessage<Command<W>>>>>()
         .and_then(Option::as_ref)
     {
-        thread.post(command);
+        thread.post(HostMessage::Command(command));
     }
 }
 /// 第一条命令创建窗口线程与窗口。
 pub(crate) fn post<W: OverlaySpec>(command: Command<W>) {
     let mut threads = threads().lock().expect("overlay thread registry poisoned");
     let entry = threads.entry(TypeId::of::<W>()).or_insert_with(|| {
-        let thread = OverlayThread::start(W::NAME, create_window::<W>, apply::<W>)
+        let thread = OverlayThread::start(W::NAME, create_window::<W>, dispatch_message::<W>)
             .map_err(|error| eprintln!("[{}] {error}", W::NAME))
             .ok();
-        Box::new(thread)
+        let look_sender = thread.as_ref().map(|thread| thread.clone_sender());
+        ThreadEntry {
+            channel: Box::new(thread),
+            set_look: Box::new(move |look| {
+                if let Some(sender) = &look_sender {
+                    sender.post(HostMessage::SetLook(look));
+                }
+            }),
+        }
     });
-    send::<W>(entry.as_ref(), command);
+    send::<W>(entry, command);
 }
 /// 只在窗口线程已经存在时投递。
 pub(crate) fn post_if_started<W: OverlaySpec>(command: Command<W>) {
     let threads = threads().lock().expect("overlay thread registry poisoned");
     if let Some(entry) = threads.get(&TypeId::of::<W>()) {
-        send::<W>(entry.as_ref(), command);
+        send::<W>(entry, command);
     }
 }
 pub(crate) fn started<W: OverlaySpec>() -> bool {
@@ -193,8 +231,15 @@ pub(crate) fn started<W: OverlaySpec>() -> bool {
         .lock()
         .expect("overlay thread registry poisoned")
         .get(&TypeId::of::<W>())
-        .and_then(|entry| entry.downcast_ref::<Option<OverlayThread<Command<W>>>>())
+        .and_then(|entry| entry.channel.downcast_ref::<Option<OverlayThread<HostMessage<Command<W>>>>>())
         .is_some_and(Option::is_some)
+}
+
+fn dispatch_message<W: OverlaySpec>(hwnd: HWND, message: HostMessage<Command<W>>) {
+    match message {
+        HostMessage::Command(command) => apply::<W>(hwnd, command),
+        HostMessage::SetLook(look) => update::<W>(hwnd, overlay_now(), |model, _| model.set_look(&look)),
+    }
 }
 
 fn update<W: OverlaySpec>(
@@ -740,7 +785,8 @@ pub(crate) fn create_window<W: OverlaySpec>() -> Option<HWND> {
         let d2d = create_d2d_factory()?;
         let text = DWriteText::new()?;
         let dpi = system_dpi();
-        let mut model = W::model::<DWriteText>(dpi, &Look::WINDOWS_LEGACY);
+        let look = current_look();
+        let mut model = W::model::<DWriteText>(dpi, &look);
         let area = placement_area(W::PLACEMENT);
         let bounds = model
             .prepare_frame(&Cx {

@@ -237,6 +237,14 @@ impl<C: Send + 'static> OverlayThread<C> {
         Ok(Self { thread_id, queue })
     }
 
+    /// 复制一份句柄供外部按类型无关方式投递消息（如主题广播）。
+    pub(crate) fn clone_sender(&self) -> Self {
+        Self {
+            thread_id: self.thread_id,
+            queue: self.queue.clone(),
+        }
+    }
+
     /// 任意线程可调用：命令入队并唤醒 UI 线程。
     pub(crate) fn post(&self, command: C) {
         let Ok(mut queue) = self.queue.lock() else {

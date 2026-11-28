@@ -71,7 +71,7 @@ export function Titlebar() {
               className={cn(
                 "h-7 rounded-[7px] px-3 text-[13px] transition-colors duration-[var(--dur-fast)]",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
-                view === item.view ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]" : "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]",
+                view === item.view ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] shadow-[var(--shadow-sm)]" : "text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
               )}
             >
               {item.label}
@@ -91,7 +91,7 @@ export function Titlebar() {
           className={cn(
             "no-drag mr-1 grid h-7 w-8 place-items-center rounded-[7px] transition-colors duration-[var(--dur-fast)]",
             "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
-            view === "settings" ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]" : "text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]",
+            view === "settings" ? "bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] shadow-[var(--shadow-sm)]" : "text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]",
           )}
         >
           <span className="h-[15px] w-[15px]">{SETTINGS_NAV.icon}</span>
@@ -159,7 +159,7 @@ function TitleBtn({
         !hoverMuted &&
           (close
             ? "hover:bg-[#e1394b] hover:text-white"
-            : "hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"),
+            : "hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-fg)]"),
       )}
     >
       {children}

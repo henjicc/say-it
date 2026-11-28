@@ -69,11 +69,13 @@ pub(crate) fn run_action(action: impl FnOnce() + Send + 'static) {
     action();
 }
 
-/// Windows 原生窗口固定使用 WindowsLegacy；Mac 各窗共用可变外观。
+/// 同步主题外观到当前平台已启动及后续创建的原生悬浮窗。
 pub(crate) fn native_overlay_set_look(look: sayit_overlay_core::look::Look) {
+    #[cfg(windows)]
+    super::native_win::host::set_look(look);
     #[cfg(target_os = "macos")]
     sayit_overlay_macos::set_look(look);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = look;
 }
 

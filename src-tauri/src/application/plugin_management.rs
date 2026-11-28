@@ -235,6 +235,7 @@ pub(crate) async fn install_provider_plugin(
     trust_signing_key: bool,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
+    crate::application::data_root::ensure_writable(&app)?;
     crate::providers::local_llm::release(None);
     let suspension = local_asr_cache::suspend_all()?;
     let install_app = app.clone();
@@ -275,6 +276,7 @@ pub(crate) async fn download_provider_model_pack(
     plugin_id: String,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
+    crate::application::data_root::ensure_writable(&app)?;
     let lease = model_download::begin_download(&plugin_id)?;
     download_model_pack_files(app, plugin_id, lease, state).await
 }
@@ -408,6 +410,7 @@ pub(crate) fn uninstall_provider_plugin(
     plugin_id: String,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<PluginRegistrySnapshot, String> {
+    crate::application::data_root::ensure_writable(&app)?;
     if model_download::is_downloading(&plugin_id) {
         return Err("这个模型包正在下载，请等它完成后再卸载".into());
     }

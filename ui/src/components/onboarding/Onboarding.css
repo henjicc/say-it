@@ -1,0 +1,161 @@
+/* 全窗口引导专属动效、键帽与胶囊演示样式（与全局主题令牌联动） */
+.ob-shell {
+  background-color: var(--color-bg);
+  background-image: radial-gradient(
+    720px 320px at 50% -40px,
+    color-mix(in srgb, var(--color-accent) 10%, transparent),
+    transparent 70%
+  );
+  color: var(--color-fg);
+}
+
+.ob-step-enter {
+  animation: ob-rise-in 220ms var(--ease-out);
+}
+
+@keyframes ob-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 逼真现代键帽（轻立体微阴影，跟随亮/暗色调） */
+.ob-keycap {
+  --ob-key-top: var(--color-surface);
+  --ob-key-side: color-mix(in srgb, var(--color-fg) 22%, var(--color-bg));
+  --ob-key-active: var(--color-accent-control);
+  --ob-key-active-side: var(--color-accent-control-active);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 92px;
+  height: 44px;
+  padding: 0 16px;
+  border-radius: 11px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: var(--ob-key-top);
+  color: var(--color-fg);
+  border: 1px solid var(--color-line-strong);
+  box-shadow:
+    0 4px 0 0 var(--ob-key-side),
+    0 7px 14px -4px rgba(15, 23, 42, 0.12);
+  transform: translateY(0);
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    background 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease;
+  user-select: none;
+}
+
+[data-ui-tone="dark"] .ob-keycap {
+  --ob-key-top: #262b36;
+  --ob-key-side: #0b0d12;
+  box-shadow:
+    0 4px 0 0 var(--ob-key-side),
+    0 8px 18px -4px rgba(0, 0, 0, 0.45);
+}
+
+.ob-keycap-sm {
+  min-width: auto;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: 0 2.5px 0 0 var(--ob-key-side);
+}
+
+.ob-keycap.is-pressed {
+  background: var(--ob-key-active);
+  color: var(--color-accent-control-contrast);
+  border-color: var(--ob-key-active);
+  box-shadow:
+    0 1px 0 0 var(--ob-key-active-side),
+    0 0 0 4px color-mix(in srgb, var(--color-accent) 18%, transparent);
+  transform: translateY(3px);
+}
+
+.ob-keycap-sm.is-pressed {
+  transform: translateY(2px);
+}
+
+.ob-keycap-led {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-fg-faint);
+  transition: background 180ms ease, box-shadow 180ms ease;
+}
+
+.ob-keycap.is-lit .ob-keycap-led {
+  background: var(--color-ok);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-ok) 80%, transparent);
+}
+
+.ob-keycap.is-pressed .ob-keycap-led {
+  background: var(--color-accent-control-contrast);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.85);
+}
+
+/* 快捷键演示舞台里的清亮听写胶囊波形 */
+@keyframes ob-demo-wave {
+  0%, 100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.ob-demo-wave i {
+  display: block;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  animation: ob-demo-wave 680ms ease-in-out infinite;
+}
+
+@keyframes ob-blink-caret {
+  0%, 49% {
+    opacity: 1;
+  }
+  50%, 100% {
+    opacity: 0;
+  }
+}
+
+.ob-demo-caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 14px;
+  background: var(--color-accent);
+  vertical-align: -2px;
+  margin-left: 2px;
+  animation: ob-blink-caret 900ms step-end infinite;
+}
+
+.ob-mic-bar {
+  transition: height 90ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-step-enter,
+  .ob-demo-wave i,
+  .ob-demo-caret {
+    animation: none !important;
+  }
+  .ob-keycap,
+  .ob-mic-bar {
+    transition: none !important;
+  }
+}

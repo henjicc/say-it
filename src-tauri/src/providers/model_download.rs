@@ -15,6 +15,13 @@ const PROGRESS_EVENT: &str = "model-pack-progress";
 static ACTIVE_DOWNLOADS: std::sync::Mutex<std::collections::BTreeSet<String>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
+pub(crate) fn has_active_downloads() -> bool {
+    ACTIVE_DOWNLOADS
+        .lock()
+        .map(|active| !active.is_empty())
+        .unwrap_or(false)
+}
+
 /// 小于这个大小的文件每次直接算，不记录：算得快，而且小文件更容易撞上同样的大小和修改时间。
 const REMEMBER_MIN_BYTES: u64 = 1024 * 1024;
 
@@ -131,6 +138,9 @@ impl Drop for DownloadLease {
 
 pub fn begin_download(plugin_id: &str) -> Result<DownloadLease, String> {
     let mut active = ACTIVE_DOWNLOADS.lock().map_err(|_| "模型下载状态锁失败")?;
+    if crate::application::data_root::is_migrating() {
+        return Err("正在迁移数据目录，完成后再试".into());
+    }
     if !active.insert(plugin_id.to_string()) {
         return Err("这个模型包正在下载，请等它完成".into());
     }

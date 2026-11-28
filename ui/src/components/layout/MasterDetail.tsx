@@ -112,8 +112,8 @@ export function NodeList<K extends string>({
                 "flex h-11 w-full items-center gap-3 rounded-[var(--radius-md)] border px-4 text-left transition-colors duration-[var(--dur-fast)]",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-ring)]",
                 selected
-                  ? "border-transparent bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)]"
-                  : "border-transparent hover:bg-[var(--color-surface-hover)]/60",
+                  ? "border-transparent bg-[var(--color-accent-control)] text-[var(--color-accent-control-contrast)] shadow-[var(--shadow-sm)]"
+                  : "border-transparent hover:bg-[var(--color-surface-hover)]",
               )}
             >
               <span aria-hidden className={cn("h-4 w-4 flex-none [&>svg]:h-full [&>svg]:w-full", !selected && "text-[var(--color-fg-subtle)]")}>
